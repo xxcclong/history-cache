@@ -1,4 +1,3 @@
-from torchmetrics import UniversalImageQualityIndex
 from tqdm import tqdm
 import cxgnncomp
 import cxgnndl
@@ -6,13 +5,23 @@ import cxgnndl
 import hiscache
 from .history_table import HistoryTable
 import torch
+from .history_model import get_model
 
 
 class HistoryTrainer(cxgnncomp.Trainer):
 
     def __init__(self, config):
-        super().__init__(config)
         self.table = HistoryTable(config)
+        self.device = torch.device(config.dl.device)
+        self.model = get_model(config, self.table)
+        self.model = self.model.to(self.device)
+        self.optimizer = cxgnncomp.get_optimizer(config.train, self.model)
+        self.scheduler = cxgnncomp.get_scheduler(config.train, self.optimizer)
+        self.loss_fn = cxgnncomp.get_loss_fn(config.train)
+        self.loader = cxgnndl.get_loader(config.dl)
+        self.type = config.train.type.lower()
+        self.load_type = config.dl.type.lower()
+        self.config = config
         assert self.loader.feat_mode in ["history_uvm", "history_mmap"]
         config.dl.loading.feat_mode = self.loader.feat_mode.replace(
             "history_", "")
@@ -53,10 +62,34 @@ class HistoryTrainer(cxgnncomp.Trainer):
             self.scheduler.step()
             self.table.evict_history(batch, self.glb_iter)
             self.table.record_history(batch.sub_to_full, batch, self.glb_iter,
-                                      self.model.used_masks)
+                                      self.used_masks)
+            self.glb_iter += 1
+        torch.cuda.synchronize()
+
+    def cxg_train_epoch(self):
+        self.model.train()
+        for batch in tqdm(
+                self.loader.train_loader,
+                bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
+            self.optimizer.zero_grad()
+            self.prepare_history_x(batch)
+
+            out = self.model(batch)
+            loss = self.loss_fn(out, batch.y)
+            loss.backward()
+            self.optimizer.step()
+            self.scheduler.step()
+            self.table.evict_history(batch, self.glb_iter)
+            self.table.record_history(batch.sub_to_full, batch, self.glb_iter,
+                                      self.used_masks)
             self.glb_iter += 1
         torch.cuda.synchronize()
 
     def train(self):
-        if self.type == "dgl" and self.load_type == "cxg":
-            self.cxg_dgl_train_epoch()
+        for epoch in range(self.config.train.train.num_epochs):
+            if self.type == "dgl" and self.load_type == "cxg":
+                self.cxg_dgl_train_epoch()
+            elif self.type == "cxg" and self.load_type == "cxg":
+                self.cxg_train_epoch()
+            else:
+                assert False

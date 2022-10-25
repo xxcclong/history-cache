@@ -5,6 +5,8 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
 
+import hiscache
+
 log = logging.getLogger(__name__)
 
 
@@ -19,5 +21,9 @@ def main(config: DictConfig):
     with open(new_file_name, 'w') as f:
         s = s_dl.replace("-", "  -")  # fix cpp yaml interprete
         f.write(s)
-    trainer = cxgnncomp.Trainer(config)
+    trainer = hiscache.HistoryTrainer(config)
     trainer.train()
+
+
+if __name__ == '__main__':
+    main()

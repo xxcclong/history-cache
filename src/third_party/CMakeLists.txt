@@ -11,8 +11,10 @@ function(initialize_submodule DIRECTORY)
     endif()
 endfunction(initialize_submodule)
 
+initialize_submodule(spdlog)
 initialize_submodule(pybind11)
 
 add_subdirectory(pybind11 EXCLUDE_FROM_ALL)
+add_subdirectory(spdlog EXCLUDE_FROM_ALL)
 
 

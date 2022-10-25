@@ -14,7 +14,7 @@ class HistoryTable:
             open(
                 path.join(str(config["dl"]["dataset"]["path"]), "processed",
                           "num_nodes.txt")).readline())
-        self.device = torch.device(config["device"])
+        self.device = torch.device(config["dl"]["device"])
         self.store_last_layer = config.history.get('store_last_layer', False)
         self.num_layers = self.num_layers_all - 1 + int(
             bool(self.store_last_layer))  # NOTE: layers of table
@@ -59,10 +59,10 @@ class HistoryTable:
         self.graph_struct_norm = int(config.history.graph_struct_norm)
 
     def get_hist_size(self, config):
-        if "SAGE" in config.model.type or "GCN" in config.model.type:  # record history after aggregation for SAGE now
+        if "SAGE" in config.train.model.type or "GCN" in config.train.model.type:  # record history after aggregation for SAGE now
             return [self.in_channels
                     ] + [self.hidden_channels] * (self.num_layers - 1)
-        elif "GAT" in config.model.type:  # record history after lin for GAT
+        elif "GAT" in config.train.model.type:  # record history after lin for GAT
             if not self.store_last_layer:
                 return [self.hidden_channels] * self.num_layers
             else:

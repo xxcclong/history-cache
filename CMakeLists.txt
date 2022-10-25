@@ -79,14 +79,14 @@ link_directories(${project_THIRD_PARTY_DIR}/yaml)
 
 add_library(${PROJECT_NAME} SHARED ${project_SOURCES} ${project_HEADERS})
 
-# find_package(spdlog REQUIRED PATHS /home/huangkz/repos/spdlog/build/)
+find_package(spdlog REQUIRED PATHS /home/huangkz/repos/spdlog/build/)
 find_package(Torch REQUIRED)
 find_package(CUDA REQUIRED)
 find_package(PythonLibs REQUIRED)
 include_directories(${PYTHON_INCLUDE_DIRS})
 
 message(STATUS "torch library: ${TORCH_LIBRARY}")
-# target_link_libraries(${PROJECT_NAME} spdlog::spdlog)
+target_link_libraries(${PROJECT_NAME} spdlog::spdlog)
 target_link_libraries(${PROJECT_NAME} ${TORCH_LIBRARIES} ${PYTHON_LIBRARIES})
 # target_link_libraries(${PROJECT_NAME} cxxopts)
 # target_link_libraries(${PROJECT_NAME} Yaml)
