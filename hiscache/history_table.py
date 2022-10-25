@@ -1,25 +1,23 @@
 import torch
 from os import path
-import time
 import hiscache_backend
 
 
 class HistoryTable:
 
     def __init__(self, config):
-        self.in_channels = config.dataset.feature_dim
-        self.out_channels = config.dataset.num_classes
-        self.hidden_channels = config.model.hidden_dim
+        self.in_channels = config.dl.dataset.feature_dim
+        self.out_channels = config.dl.dataset.num_classes
+        self.hidden_channels = config.train.model.hidden_dim
+        self.num_layers_all = config.train.model.num_layers
         self.total_num_node = int(
             open(
-                path.join(str(config["dataset"]["path"]), "processed",
+                path.join(str(config["dl"]["dataset"]["path"]), "processed",
                           "num_nodes.txt")).readline())
         self.device = torch.device(config["device"])
-        self.num_layers_all = config.model.num_layers
         self.store_last_layer = config.history.get('store_last_layer', False)
         self.num_layers = self.num_layers_all - 1 + int(
             bool(self.store_last_layer))  # NOTE: layers of table
-        # self.history_size_layered = [self.in_channels] + [self.hidden_channels] * (self.num_layers - 1)
         self.history_size_layered = self.get_hist_size(config)
         if isinstance(config.history.buffer_size, int):
             self.history_num = [config.history.buffer_size] * self.num_layers
@@ -47,16 +45,18 @@ class HistoryTable:
             torch.zeros([1], device=self.device).long()
             for _ in range(self.num_layers)
         ]
-        self.record_method = config.history.get('record_method', "grad")
-        self.record_rate = config.history.record_rate
-        self.evict_method = config.history.evict_method
-        if self.evict_method in ["grad", "random", "both"]:
-            self.evict_rate = config.history.evict_rate
-        if self.evict_method in ["staleness", "both"]:
-            self.staleness_thres = config.history.staleness_thres
+        self.method = config.history['method']
+        self.rate = float(config.history['rate'])
+        assert self.method in ["random", "grad", "staleness"]
+        if self.method != "staleness":
+            assert self.rate > 0
+        else:
+            self.rate = 1
+        self.staleness_thres = config.history.staleness_thres
         self.num_used = 0
         self.new_histories = []
         self.history_out = []
+        self.graph_struct_norm = int(config.history.graph_struct_norm)
 
     def get_hist_size(self, config):
         if "SAGE" in config.model.type or "GCN" in config.model.type:  # record history after aggregation for SAGE now
@@ -71,7 +71,6 @@ class HistoryTable:
                 ]
 
     def lookup(self, sub_to_full, num_node_in_layer):
-        t0 = time.time()
         self.tmp_history_buffer_layered = []
         self.sub_to_history_layered = []
         self.sub_to_history = []
@@ -99,16 +98,13 @@ class HistoryTable:
                 num_node, device=sub_to_history.device).long().neg()
             sub_to_history_ = output_sub_to_history.index_put_(
                 [index], new_id)  # [-1, 0, -1, 1, -1, 2]
-            if self.evict_method == "grad" and self.evict_rate != 0:
+            if self.method == "grad":
                 tmp_history_buffer.requires_grad = True
             self.tmp_history_buffer_layered.append(tmp_history_buffer)
             self.sub_to_history_layered.append(sub_to_history_)
 
     @torch.no_grad()
     def record_history(self, sub_to_full, batch, glb_iter, used_masks):
-        if self.record_rate == 0:
-            return
-        t0 = time.time()
         for layer_id in range(self.num_layers):
             if self.history_buffer_layered[layer_id].shape[0] == 0:
                 continue
@@ -116,28 +112,26 @@ class HistoryTable:
                                                layer_id].item()
             his = self.history_out[layer_id][:num_node]
             grad = (self.history_out[layer_id].grad)[:num_node]
-            if self.record_method == "grad":
-                graph_structure_score = hiscache_backend.get_graph_structure_score(
-                    batch.ptr, batch.idx, batch.x.shape[0], batch.y.shape[0],
-                    self.num_layers)
-                record_sum = torch.sum(torch.abs(grad), 1)
+            if self.method == "grad":
                 # record_sum = torch.einsum("ij,ij->i", grad, grad)
-                record_sum = torch.mul(
-                    record_sum, graph_structure_score[:record_sum.shape[0]])
-            elif self.record_method == "random":
+                record_sum = torch.sum(torch.abs(grad), 1)
+                if self.graph_struct_norm:
+                    graph_structure_score = hiscache_backend.get_graph_structure_score(
+                        batch.ptr, batch.idx, batch.x.shape[0],
+                        batch.y.shape[0], self.num_layers)
+                    record_sum = torch.mul(
+                        record_sum,
+                        graph_structure_score[:record_sum.shape[0]])
+            elif self.method == "random":
                 record_sum = torch.randn([grad.shape[0]]).to(grad.device)
             else:
                 assert False, "Error record type"
-            thres = torch.quantile(record_sum,
-                                   self.record_rate,
-                                   dim=0,
-                                   keepdim=False)
+            thres = torch.quantile(record_sum, self.rate, dim=0, keepdim=False)
             hiscache_backend.record_history(
                 his,
                 self.history_buffer_layered[layer_id],
-                used_masks[
-                    layer_id +
-                    1],  # used mask: raw_feature, embedding_layer0, embeding_layer1 ... seed_node_embedding
+                # used mask: raw_feature, embedding_layer0, embeding_layer1 ... seed_node_embedding
+                used_masks[layer_id + 1],
                 sub_to_full,
                 self.sub_to_history[layer_id],
                 self.history_to_full_layered[layer_id],
@@ -147,8 +141,6 @@ class HistoryTable:
                 thres,
                 self.checkin_iter[layer_id],
                 glb_iter)
-        t_checkin = time.time() - t0
-        # log.info(t_checkin)
 
     def evict_by_staleness(self, glb_iter, staleness_thres):
         if isinstance(staleness_thres, int):
@@ -164,7 +156,7 @@ class HistoryTable:
             self.full_to_history_layered[layer_id][full_id] = -1
 
     def evict_by_both(self, batch, glb_iter, staleness_thres):
-        if self.evict_rate == 0:
+        if self.method == "staleness":
             self.evict_by_staleness(glb_iter, staleness_thres)
             return
 
@@ -177,16 +169,22 @@ class HistoryTable:
             # by gradient first
             num_node = batch.num_node_in_layer[self.num_layers_all - 1 -
                                                layer_id].item()
-            grad = (self.history_out[layer_id].grad)[:num_node]
-            graph_structure_score = hiscache_backend.get_graph_structure_score(
-                batch.ptr, batch.idx, batch.x.shape[0], batch.y.shape[0],
-                self.num_layers)
-            # evict_sum = torch.sum(torch.abs(grad), 1)
-            # evict_sum = torch.einsum("ij,ij->i", grad, grad)
-            # evict_sum = torch.mul(evict_sum, graph_structure_score[:evict_sum.shape[0]])
-            evict_sum = torch.randn([grad.shape[0]], device=grad.device)
+            if self.method == "grad":
+                grad = (self.history_out[layer_id].grad)[:num_node]
+                # evict_sum = torch.einsum("ij,ij->i", grad, grad)
+                evict_sum = torch.sum(torch.abs(grad), 1)
+                if self.graph_struct_norm:
+                    graph_structure_score = hiscache_backend.get_graph_structure_score(
+                        batch.ptr, batch.idx, batch.x.shape[0],
+                        batch.y.shape[0], self.num_layers)
+                    evict_sum = torch.mul(
+                        evict_sum, graph_structure_score[:evict_sum.shape[0]])
+            elif self.method == "random":
+                evict_sum = torch.randn([num_node], device=self.device)
+            else:
+                assert False, "Error record type"
             thres = torch.quantile(evict_sum,
-                                   1 - self.evict_rate,
+                                   1 - self.rate,
                                    dim=0,
                                    keepdim=False)
             to_evict_id = torch.masked_select(self.sub_to_history[layer_id],
