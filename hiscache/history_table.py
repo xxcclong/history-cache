@@ -19,6 +19,7 @@ class HistoryTable:
         self.num_layers = self.num_layers_all - 1 + int(
             bool(self.store_last_layer))  # NOTE: layers of table
         self.history_size_layered = self.get_hist_size(config)
+        print("history_size_layered", self.history_size_layered)
         if isinstance(config.history.buffer_size, int):
             self.history_num = [config.history.buffer_size] * self.num_layers
         else:
@@ -59,10 +60,12 @@ class HistoryTable:
         self.graph_struct_norm = int(config.history.graph_struct_norm)
 
     def get_hist_size(self, config):
-        if "SAGE" in config.train.model.type or "GCN" in config.train.model.type:  # record history after aggregation for SAGE now
+        if "SAGE" in config.train.model.type or "GCN" == config.train.model.type:  # record history after aggregation for SAGE now
             return [self.in_channels
                     ] + [self.hidden_channels] * (self.num_layers - 1)
-        elif "GAT" in config.train.model.type:  # record history after lin for GAT
+        elif "gat" in config.train.model.type.lower(
+        ) or "rgcn" == config.train.model.type.lower(
+        ):  # record history after lin for GAT
             if not self.store_last_layer:
                 return [self.hidden_channels] * self.num_layers
             else:
@@ -89,7 +92,7 @@ class HistoryTable:
             selected_sub_to_history = torch.masked_select(
                 sub_to_history, mask)  # [x,y,z]
             tmp_history_buffer = self.history_buffer_layered[layer_id][
-                selected_sub_to_history].view(-1)
+                selected_sub_to_history]  # .view(-1)
             new_id = torch.arange(0,
                                   len(selected_sub_to_history),
                                   device=sub_to_history.device)  # [0,1,2]
