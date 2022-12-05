@@ -84,7 +84,8 @@ __global__ void count_history_kernel(Index *ptr, Index *idx, Index *hmap,
   Index begin = ptr[row], end = ptr[row + 1];
   // using histroy
   if (hmap != nullptr && hmap[row] != -1) {
-    use_out[row] = 1;
+    // use_out[row] = 1; // if with historical embedding, not involved in any
+    // computation
     return;
   } else {
     if (lane == 0) {
@@ -99,15 +100,14 @@ __global__ void count_history_kernel(Index *ptr, Index *idx, Index *hmap,
 }
 
 std::vector<torch::Tensor> count_history_reconstruct(
-    torch::Tensor ptr, torch::Tensor idx,
-    std::vector<torch::Tensor> history_maps, Index num_node, Index num_seed,
-    int num_layer) {
+    torch::Tensor ptr, torch::Tensor idx, torch::Tensor history_maps,
+    Index num_node, Index num_seed, int num_layer) {
   std::vector<torch::Tensor> output_tensors;
   for (int i = 0; i < num_layer + 1; ++i) {
     output_tensors.push_back(
         ptr.new_zeros({num_node}, torch::dtype(torch::kBool)));
   }
-  int num_history_layer = history_maps.size();
+  // int num_history_layer = history_maps.size();
   // in/out mask: num_layer + 1; needed ones: 1;
   int block_size = 512;
   int num_per_block = block_size / 32;
@@ -116,10 +116,9 @@ std::vector<torch::Tensor> count_history_reconstruct(
     count_history_kernel<<<(ptr_size + num_per_block - 1) / num_per_block,
                            block_size>>>(
         ptr.data<Index>(), idx.data<Index>(),
-        (num_layer - i > num_history_layer)
+        i != 1  // (num_layer - i > num_history_layer)
             ? nullptr
-            : history_maps[num_layer - 1 - i]
-                  .data<Index>() /* starting from seed node layer */,
+            : history_maps.data<Index>() /* starting from seed node layer */,
         output_tensors[num_layer - i].data<bool>(),
         output_tensors[num_layer - 1 - i].data<bool>(), ptr_size, num_seed,
         num_layer - 1 - i, num_layer);

@@ -78,9 +78,11 @@ class MySageConvHistory(torch.nn.Module):
         if history_size > 0:
             # log.info(
             #     f"{torch.max(history_map)} {torch.min(history_map)} {history_map.shape} {history_buffer.shape} {history_size} {num_node} {x.shape}")
+            # torch.cuda.synchronize()
             out = hiscache_backend.aggr_forward_history(
                 x, ptr, idx, history_map, history_buffer, history_size,
                 num_node)
+            # torch.cuda.synchronize()
         else:
             out = cxgnncomp.sage_mean_forward(x, ptr, idx, num_node)
         his = out

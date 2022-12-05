@@ -18,7 +18,7 @@ __global__ void gen_fwd_history_v2(Index *ptr, Index *idx, float *vin,
   int jlimit;
   Index hid = hmap[row];
   if (hid != -1) {
-    if (col < INFEATURE) vout[row * INFEATURE + col] = hbuf[hid * hsize + col];
+    if (col < INFEATURE) vout[row * INFEATURE + col] = hbuf[row * hsize + col];
     return;
   }
 #pragma unroll
@@ -55,7 +55,7 @@ __global__ void gen_fwd_history_v2_edge_value(Index *ptr, Index *idx,
   int jlimit;
   Index hid = hmap[row];
   if (hid != -1) {
-    if (col < INFEATURE) vout[row * INFEATURE + col] = hbuf[hid * hsize + col];
+    if (col < INFEATURE) vout[row * INFEATURE + col] = hbuf[row * hsize + col];
     return;
   }
 #pragma unroll
@@ -94,11 +94,11 @@ __global__ void gen_fwd_history_v2_edge_value_multi_head(
   if (hid != -1) {
     if (hsize == INFEATURE) {
       if (col < INFEATURE)
-        vout[target_id * INFEATURE + col] = hbuf[hid * hsize + col];
+        vout[target_id * INFEATURE + col] = hbuf[row * hsize + col];
     } else if (hsize == INFEATURE * num_head) {
       if (col < INFEATURE)
         vout[target_id * INFEATURE + col] =
-            hbuf[hid * hsize + head_id * INFEATURE + col];
+            hbuf[row * hsize + head_id * INFEATURE + col];
     } else {
       assert(false);
     }
@@ -142,7 +142,7 @@ __global__ void gen_bwd_history_grad_v2(
   Index hid = hmap[row];
   if (hid != -1) {
     grad = grads_in[row * INFEATURE + col];  // no div in forward history
-    if (col < INFEATURE) atomicAdd(grads_history + hid * hsize + col, grad);
+    if (col < INFEATURE) atomicAdd(grads_history + row * hsize + col, grad);
     return;
   }
 
@@ -184,7 +184,7 @@ __global__ void gen_bwd_history_grad_v2_edge_value(
   Index hid = hmap[row];
   if (hid != -1) {
     grad = grads_in[row * INFEATURE + col];  // no div in forward history
-    if (col < INFEATURE) atomicAdd(grads_history + hid * hsize + col, grad);
+    if (col < INFEATURE) atomicAdd(grads_history + row * hsize + col, grad);
     return;
   }
 
@@ -231,7 +231,7 @@ __global__ void gen_bwd_history_grad_v2_edge_value_edge_grad(
   if (hid != -1) {
     grad = grads_in[row * INFEATURE + col];  // no div in forward history
     // grad * 1e6);
-    if (col < INFEATURE) atomicAdd(grads_history + hid * hsize + col, grad);
+    if (col < INFEATURE) atomicAdd(grads_history + row * hsize + col, grad);
     return;
   }
 
@@ -289,10 +289,10 @@ __global__ void gen_bwd_history_grad_v2_edge_value_multi_head(
   if (hid != -1) {
     grad = grads_in[target_id * INFEATURE + col];
     if (hsize == INFEATURE) {
-      if (col < INFEATURE) atomicAdd(grads_history + hid * hsize + col, grad);
+      if (col < INFEATURE) atomicAdd(grads_history + row * hsize + col, grad);
     } else if (hsize == INFEATURE * num_head) {
       if (col < INFEATURE)
-        atomicAdd(grads_history + hid * hsize + head_id * INFEATURE + col,
+        atomicAdd(grads_history + row * hsize + head_id * INFEATURE + col,
                   grad);
     } else {
       assert(false);
@@ -346,10 +346,10 @@ __global__ void gen_bwd_history_grad_v2_edge_value_multi_head_edge_grad(
   if (hid != -1) {
     grad = grads_in[target_id * INFEATURE + col];
     if (hsize == INFEATURE) {
-      if (col < INFEATURE) atomicAdd(grads_history + hid * hsize + col, grad);
+      if (col < INFEATURE) atomicAdd(grads_history + row * hsize + col, grad);
     } else if (hsize == INFEATURE * num_head) {
       if (col < INFEATURE)
-        atomicAdd(grads_history + hid * hsize + head_id * INFEATURE + col,
+        atomicAdd(grads_history + row * hsize + head_id * INFEATURE + col,
                   grad);
     } else {
       assert(false);
