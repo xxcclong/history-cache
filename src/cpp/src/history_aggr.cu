@@ -516,11 +516,12 @@ tensor_list historyBackwardImpl(AutogradContext *ctx,
   if (edge_value.sizes()[0] == 0) {
     if (history_size == 0) {
       ASSERT(false);
-    } else
+    } else {
       gen_bwd_history_grad_v2<<<grid, block>>>(
           ptr, idx, grad_output.data<float>(), history_map, input.data<float>(),
           grad_input.data<float>(), grad_history.data<float>(), num_node,
           feat_len, hsize);
+    }
   } else if (edge_value.sizes().size() == 1) {
     if (history_size == 0) {
       ASSERT(false);

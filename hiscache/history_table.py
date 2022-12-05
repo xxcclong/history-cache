@@ -1,6 +1,9 @@
 import torch
 from os import path
 import hiscache_backend
+from .util import log
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 class HistoryTable:
@@ -58,9 +61,24 @@ class HistoryTable:
         self.new_histories = []
         self.history_out = []
         self.graph_struct_norm = int(config.history.graph_struct_norm)
+        self.compare = True
+        if self.compare:
+            self.previous_embedding = []
+            for feat_len in self.history_size_layered:
+                self.previous_embedding.append(
+                    torch.empty([self.total_num_node, feat_len]))
+            self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+
+    def show(self):
+        used_table = []
+        for layer_id in range(self.num_layers):
+            used_table.append(
+                self.history_to_full_layered[layer_id].shape[0] - self.history_to_full_layered[layer_id].eq(-1).sum())
+        print("used_table", used_table)
 
     def get_hist_size(self, config):
-        if "SAGE" in config.train.model.type or "GCN" == config.train.model.type:  # record history after aggregation for SAGE now
+        # record history after aggregation for SAGE now
+        if "SAGE" in config.train.model.type or "GCN" == config.train.model.type:
             return [self.in_channels
                     ] + [self.hidden_channels] * (self.num_layers - 1)
         elif "gat" in config.train.model.type.lower(
@@ -114,6 +132,29 @@ class HistoryTable:
             num_node = batch.num_node_in_layer[self.num_layers_all - 1 -
                                                layer_id].item()
             his = self.history_out[layer_id][:num_node]
+            if self.compare:
+                # diff = his.cpu() - \
+                #     self.previous_embedding[layer_id][batch.sub_to_full[:num_node].cpu(
+                #     )]
+                previous = self.previous_embedding[layer_id][batch.sub_to_full[:num_node].cpu()]
+
+                diff = self.cos(his.cpu(), previous).numpy()
+                # diff = ((his.cpu() - previous).norm(dim=1)  / his.cpu().norm(dim=1)).numpy()
+                diff = diff[torch.abs(previous.norm(dim=1)) > 1e-6]
+                diff = diff[1 - diff > 1e-6]
+                if glb_iter % 10 == 1:
+                    # diff = (diff.norm(dim=1) / his.cpu().norm(dim=1)).numpy()
+                    diff.sort()
+                    print("diff", diff)
+                    diff = diff[np.abs(diff) > 1e-8]
+                    plt.plot(diff, label="iter {} layer {}".format(
+                        glb_iter, layer_id))
+                    plt.legend()
+                    plt.savefig("cos-diff{}-{}.pdf".format(glb_iter, layer_id))
+                    plt.clf()
+
+                self.previous_embedding[layer_id][batch.sub_to_full[:num_node].cpu(
+                )] = his.cpu()
             grad = (self.history_out[layer_id].grad)[:num_node]
             if self.method == "grad":
                 # record_sum = torch.einsum("ij,ij->i", grad, grad)

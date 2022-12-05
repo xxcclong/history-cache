@@ -3,6 +3,7 @@ import hiscache_backend
 import torch
 import torch.nn.functional as F
 import dgl.nn.pytorch.conv as dglnn
+from .util import log
 
 
 class DGLRGCNHistory(torch.nn.Module):
@@ -75,13 +76,15 @@ class MySageConvHistory(torch.nn.Module):
     def forward(self, x, ptr, idx, history_map, history_buffer, history_size,
                 num_node):
         if history_size > 0:
+            # log.info(
+            #     f"{torch.max(history_map)} {torch.min(history_map)} {history_map.shape} {history_buffer.shape} {history_size} {num_node} {x.shape}")
             out = hiscache_backend.aggr_forward_history(
                 x, ptr, idx, history_map, history_buffer, history_size,
                 num_node)
         else:
             out = cxgnncomp.sage_mean_forward(x, ptr, idx, num_node)
         his = out
-        if self.need_grad and self.training:
+        if self.need_grad and self.training and history_size > 0:
             his.retain_grad()
         out = self.lin_l(out)
         if self.root_weight:
@@ -112,13 +115,18 @@ class HistorySAGE(torch.nn.Module):
     def forward(self, batch):
         x = batch.x
         for i, conv in enumerate(self.convs[:-1]):
-            if self.training:
+            if self.training and i == self.num_layers - 2:
                 x, his = conv(x, batch.ptr, batch.idx,
-                              self.table.sub_to_history_layered[i],
-                              self.table.tmp_history_buffer_layered[i],
-                              self.table.history_size_layered[i],
+                              self.table.sub2embed,
+                              self.table.cached_embedding,
+                              self.hidden_channels,
                               batch.num_node_in_layer[self.num_layers - 1 - i])
-                self.table.history_out.append(his)
+                # x, his = conv(x, batch.ptr, batch.idx,
+                #               self.table.sub_to_history_layered[i],
+                #               self.table.tmp_history_buffer_layered[i],
+                #               self.table.history_size_layered[i],
+                #               batch.num_node_in_layer[self.num_layers - 1 - i])
+                self.table.produced_embedding = his
             else:
                 x, his = conv(x, batch.ptr, batch.idx, torch.tensor([]),
                               torch.tensor([]), 0,
@@ -127,6 +135,7 @@ class HistorySAGE(torch.nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         if self.training and self.last_layer_history:
+            assert False
             x, his = self.convs[-1](x, batch.ptr, batch.idx,
                                     self.table.sub_to_history_layered[-1],
                                     self.table.tmp_history_buffer_layered[-1],
@@ -152,7 +161,7 @@ class HistorySAGE(torch.nn.Module):
                                        need_grad=(self.table.method == "grad"),
                                        **kwargs))
         if self.num_layers > 1:
-            self.last_layer_history = self.table.num_layers == self.num_layers
+            self.last_layer_history = False  # self.table.num_layers == self.num_layers
             self.convs.append(
                 self.init_history_conv(self.hidden_channels,
                                        self.out_channels,

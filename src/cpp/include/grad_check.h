@@ -16,9 +16,8 @@ void record_history(Tensor buffer_new, Tensor buffer_all, Tensor used_mask,
                     Tensor checkin_iter, Index glb_iter);
 
 std::vector<torch::Tensor> count_history_reconstruct(
-    torch::Tensor ptr, torch::Tensor idx,
-    std::vector<torch::Tensor> history_maps, Index num_node, Index num_seed,
-    int num_layer);
+    torch::Tensor ptr, torch::Tensor idx, torch::Tensor history_maps,
+    Index num_node, Index num_seed, int num_layer);
 
 torch::Tensor get_graph_structure_score(torch::Tensor ptr, torch::Tensor idx,
                                         Index num_node, Index num_seed,
