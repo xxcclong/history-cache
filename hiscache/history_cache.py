@@ -63,18 +63,13 @@ class HistoryCache:
     def fill(self, config):
         t0 = time.time()
         # fill with raw features
-        ptr_datapath = path.join(str(config["dl"]["dataset"]["path"]), "processed",
-                                 "csr_ptr_undirected.dat")
-        ptr = torch.from_numpy(np.fromfile(ptr_datapath,
-                                           dtype=np.int64))
-        deg = ptr[1:] - ptr[:-1]  # in degree
-        del ptr
-        sorted, indice = torch.sort(deg)
-        del sorted
-        overall_num_node = deg.shape[0]
-        del deg
+        sorted_indices_datapath = path.join(str(config["dl"]["dataset"]["path"]), "processed",
+                                            "sorted_indices.dat")
+        indice = torch.from_numpy(np.fromfile(
+            sorted_indices_datapath, dtype=np.int64))
+        log.info("load indice")
         # assert overall_num_node >= self.overall_feat_num
-        if self.overall_feat_num > overall_num_node:
+        if self.overall_feat_num > self.total_num_node:
             cache_indice = indice
         else:
             cache_indice = indice[-self.overall_feat_num:]
@@ -92,15 +87,17 @@ class HistoryCache:
         else:
             self.dtype = np.float32
             self.torch_dtype = torch.float32
-        if dset_name in ["twitter", "friendster", "mag240m_384", "mag240m_768"]:
-            tmp_buffer = torch.randn(
-                [self.total_num_node, self.in_channels], dtype=self.torch_dtype)
+        if dset_name in ["twitter", "friendster", "mag240m_384", "mag240m_768", "rmag240m_384", "rmag240m_768"]:
+            # tmp_buffer = torch.randn(
+            #     [self.total_num_node, self.in_channels], dtype=self.torch_dtype)
+            self.buffer.view(-1, self.in_channels)[-cache_indice.shape[0]:] = torch.randn(
+                [cache_indice.shape[0], self.in_channels])
         else:
             tmp_buffer = torch.from_numpy(
                 np.fromfile(buffer_path, dtype=self.dtype)).view(self.total_num_node, self.in_channels)
-        self.buffer.view(-1, self.in_channels)[-cache_indice.shape[0]
-                         :] = tmp_buffer[cache_indice].view(-1, self.in_channels)
-        del tmp_buffer
+            self.buffer.view(-1, self.in_channels)[-cache_indice.shape[0]
+                             :] = tmp_buffer[cache_indice].view(-1, self.in_channels)
+            del tmp_buffer
         if self.buffer.shape[0] % self.hidden_channels != 0:
             self.buffer = torch.cat(
                 [self.buffer, torch.zeros(self.hidden_channels - (self.buffer.shape[0] % self.hidden_channels), dtype=self.torch_dtype)])
@@ -192,4 +189,3 @@ class HistoryCache:
         x[hit_feat_mask] = self.buffer.view(-1, self.in_channels)[
             self.sub2feat[hit_feat_mask]]
         batch.x = x
-        torch.cuda.synchronize()
