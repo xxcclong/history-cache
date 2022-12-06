@@ -56,8 +56,8 @@ class HistoryCache:
         max_buffer_byte = (max_buffer_byte + 4 * lcm -
                            1) // (4 * lcm) * (4 * lcm)
         self.buffer = torch.empty([max_buffer_byte // 4])  # 4 bytes per float
-        # self.embed2full = torch.ones(
-        #     self.buffer.shape[0] // self.hidden_channels, dtype=torch.int64, device=self.device) * -1
+        self.embed2full = torch.ones(
+            self.buffer.shape[0] // self.hidden_channels, dtype=torch.int64, device=self.device) * -1
         self.overall_feat_num = self.buffer.shape[0] // self.in_channels
         self.overall_embed_num = self.buffer.shape[0] // self.hidden_channels
         log.info(f"max buffer size: {self.buffer.shape}")
@@ -111,27 +111,35 @@ class HistoryCache:
     @torch.no_grad()  # important for removing grad from computation graph
     def update_history(self, batch, glb_iter):
         num_node = batch.num_node_in_layer[1].item()
-        # print(self.staleness_thres)
         if (glb_iter % self.staleness_thres) == 0:
             self.header = 0
-            # self.header.zero_()
-        grad = self.produced_embedding.grad
+        if self.produced_embedding is None:
+            self.produced_embedding = torch.randn(
+                [num_node, self.hidden_channels], device=self.device)
         used_mask = self.used_masks[2][:num_node]
-        assert grad.shape[0] == num_node, "grad shape: {}, num_node: {}".format(
-            grad.shape, num_node)
-        grad = grad.norm(dim=1)
+        if self.produced_embedding.grad is not None:
+            grad = self.produced_embedding.grad
+            assert grad.shape[0] == num_node, "grad shape: {}, num_node: {}".format(
+                grad.shape, num_node)
+            grad = grad.norm(dim=1)
+        else:
+            grad = torch.randn([num_node], device=self.device)
         thres = torch.quantile(grad, self.rate)
         record_mask = torch.logical_and(grad < thres, used_mask)
+        self.produced_embedding.grad = None
         # record
         # print(self.produced_embedding.shape)
-        self.produced_embedding = self.produced_embedding[record_mask]
-        num_to_record = self.produced_embedding.shape[0]
+        embed_to_record = self.produced_embedding[record_mask]
+        num_to_record = embed_to_record.shape[0]
         self.buffer.view(-1, self.hidden_channels)[
-            self.header: self.header+num_to_record] = self.produced_embedding
+            self.header: self.header+num_to_record] = embed_to_record
 
         # invalidate the cache that are about to be overwritten
-        self.full2embed[torch.logical_and(
-            self.full2embed >= self.header, self.full2embed < self.header + self.produced_embedding.shape[0])] = -1
+        tmp = self.embed2full[self.header: self.header + num_to_record]
+        change_area = self.full2embed[tmp]
+        change_area[torch.logical_and(
+            change_area >= self.header, change_area < self.header + num_to_record)] = -1
+        self.full2embed[tmp] = change_area
         # hkz comment:
         #   below is not right: there are some nodes that are updated by other iteration of embeddings
         #   so embed2full is not needed
@@ -139,11 +147,12 @@ class HistoryCache:
         #                 self.produced_embedding.shape[0]]] = -1
 
         # update the mapping from full id to embed id
-        self.full2embed[batch.sub_to_full[:num_node][record_mask]] = torch.arange(
-            self.header, self.header+self.produced_embedding.shape[0], device=self.device)
-        # self.embed2full[self.header: self.header +
-        #                 self.produced_embedding.shape[0]] = batch.sub_to_full[:num_node][record_mask]
-        self.header += self.produced_embedding.shape[0]
+        change_id = batch.sub_to_full[:num_node][record_mask]
+        new_id = torch.arange(
+            self.header, self.header+num_to_record, device=self.device)
+        self.full2embed[change_id] = new_id
+        self.embed2full[self.header: self.header + num_to_record] = batch.sub_to_full[:num_node][record_mask]
+        self.header += num_to_record
         self.produced_embedding = None
         # evict
         evict_mask = torch.logical_and(grad > thres, ~used_mask)
