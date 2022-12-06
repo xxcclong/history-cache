@@ -109,9 +109,7 @@ class HistoryTrainer(cxgnncomp.Trainer):
 
             out = self.model(batch)
             loss = self.loss_fn(out, batch.y)
-            torch.cuda.synchronize()
             loss.backward()
-            torch.cuda.synchronize()
             self.optimizer.step()
             self.scheduler.step()
             # self.table.evict_history(batch, self.glb_iter)

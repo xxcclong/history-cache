@@ -21,7 +21,11 @@ def main(config: DictConfig):
     with open(new_file_name, 'w') as f:
         s = s_dl.replace("-", "  -")  # fix cpp yaml interprete
         f.write(s)
-    trainer = hiscache.HistoryTrainer(config)
+    num_device = config.dl.num_device
+    if num_device > 1:
+        trainer = hiscache.MultiGpuHistoryTrainer(config)
+    else:
+        trainer = hiscache.HistoryTrainer(config)
     trainer.train()
 
 

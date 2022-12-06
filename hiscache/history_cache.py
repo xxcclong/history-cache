@@ -8,7 +8,7 @@ import time
 
 
 class HistoryCache:
-    def __init__(self, uvm, config):
+    def __init__(self, uvm, config, device_id=-1):
         self.in_channels = config.dl.dataset.feature_dim
         self.out_channels = config.dl.dataset.num_classes
         self.hidden_channels = config.train.model.hidden_dim
@@ -17,7 +17,11 @@ class HistoryCache:
             open(
                 path.join(str(config["dl"]["dataset"]["path"]), "processed",
                           "num_nodes.txt")).readline())
-        self.device = torch.device(config["dl"]["device"])
+        if config["dl"]["num_device"] > 1:
+            assert device_id >= 0
+            self.device = torch.device(device_id)
+        else:
+            self.device = torch.device(config["dl"]["device"])
         # history embedding settings
         self.method = config.history['method']
         self.rate = float(config.history['rate'])
@@ -95,13 +99,13 @@ class HistoryCache:
         else:
             tmp_buffer = torch.from_numpy(
                 np.fromfile(buffer_path, dtype=self.dtype)).view(self.total_num_node, self.in_channels)
-            self.buffer.view(-1, self.in_channels)[-cache_indice.shape[0]
-                             :] = tmp_buffer[cache_indice].view(-1, self.in_channels)
+            self.buffer.view(-1, self.in_channels)[-cache_indice.shape[0]:] = tmp_buffer[cache_indice].view(-1, self.in_channels)
             del tmp_buffer
         if self.buffer.shape[0] % self.hidden_channels != 0:
             self.buffer = torch.cat(
                 [self.buffer, torch.zeros(self.hidden_channels - (self.buffer.shape[0] % self.hidden_channels), dtype=self.torch_dtype)])
         self.buffer = self.buffer.to(self.device)
+        log.info(f"buffer size {self.buffer.shape}")
         log.info(f"filling buffer with raw features: {time.time() - t0}")
 
     @torch.no_grad()  # important for removing grad from computation graph
@@ -170,7 +174,7 @@ class HistoryCache:
         hit_feat_mask = self.sub2feat != -1
         # not pruned and not loaded
         load_mask = torch.logical_and(used_mask, (~hit_feat_mask))
-        self.ana = 1
+        self.ana = 0
         if self.ana:
             log.info(
                 f"prune-by-his: {torch.sum(~self.used_masks[0])} prune-by-feat: {torch.sum(hit_feat_mask)} prune-by-both: {torch.sum(~load_mask)} overall: {batch.sub_to_full.shape[0]}")
@@ -179,13 +183,6 @@ class HistoryCache:
         # 2. load raw features
         x = self.uvm.masked_get(batch.sub_to_full, load_mask)
         # 3. load hit raw feature cache
-        # print(x.device, self.buffer.device,
-        #       self.sub2feat.device, hit_feat_mask.device)
-        # print(torch.max(self.sub2feat))
-        # print(self.buffer.view(-1, self.in_channels).shape)
-        # print(x.shape)
-        # print(hit_feat_mask.shape)
-        # torch.cuda.synchronize()
         x[hit_feat_mask] = self.buffer.view(-1, self.in_channels)[
             self.sub2feat[hit_feat_mask]]
         batch.x = x
