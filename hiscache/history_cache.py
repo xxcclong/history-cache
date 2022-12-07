@@ -151,7 +151,8 @@ class HistoryCache:
         new_id = torch.arange(
             self.header, self.header+num_to_record, device=self.device)
         self.full2embed[change_id] = new_id
-        self.embed2full[self.header: self.header + num_to_record] = batch.sub_to_full[:num_node][record_mask]
+        self.embed2full[self.header: self.header +
+                        num_to_record] = batch.sub_to_full[:num_node][record_mask]
         self.header += num_to_record
         self.produced_embedding = None
         # evict
@@ -192,6 +193,10 @@ class HistoryCache:
         # 2. load raw features
         x = self.uvm.masked_get(batch.sub_to_full, load_mask)
         # 3. load hit raw feature cache
-        x[hit_feat_mask] = self.buffer.view(-1, self.in_channels)[
-            self.sub2feat[hit_feat_mask]]
+        # x[hit_feat_mask] = self.buffer.view(-1, self.in_channels)[
+        #     self.sub2feat[hit_feat_mask]]
+
+        cached_feat = self.buffer.view(-1, self.in_channels)[self.sub2feat]
+        cached_feat[~hit_feat_mask] = 0
+        x += cached_feat
         batch.x = x
