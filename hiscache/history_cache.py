@@ -36,9 +36,9 @@ class HistoryCache:
         # self.header = torch.zeros([1], dtype=torch.int64, device=self.device)
         self.header = 0
         self.produced_embedding = None  # embedding that produced from training iterations
-        self.allocate()
-        self.fill(config)
-        self.uvm = uvm
+        # self.allocate()
+        # self.fill(config)
+        # self.uvm = uvm
 
     def allocate(self):
         t0 = time.time()
@@ -91,7 +91,8 @@ class HistoryCache:
         else:
             self.dtype = np.float32
             self.torch_dtype = torch.float32
-        if dset_name in ["twitter", "friendster", "mag240m_384", "mag240m_768", "rmag240m_384", "rmag240m_768"]:
+        log.info(dset_name)
+        if dset_name in ["twitter", "friendster", "mag240m_384", "mag240m_768", "rmag240m_384", "rmag240m_768", "papers100m"]:
             # tmp_buffer = torch.randn(
             #     [self.total_num_node, self.in_channels], dtype=self.torch_dtype)
             self.buffer.view(-1, self.in_channels)[-cache_indice.shape[0]:] = torch.randn(
@@ -161,6 +162,12 @@ class HistoryCache:
         self.full2embed[batch.sub_to_full[:num_node][evict_mask]] = -1
 
     # infer both node features and history embeddings
+
+    def lookup_and_load_rand(self, batch, num_layer):
+        batch.x = torch.randn([batch.sub_to_full.shape[0], self.in_channels], device=self.device)
+        nodes = batch.sub_to_full[:batch.num_node_in_layer[1].item()]
+        self.sub2embed = torch.ones([batch.num_node_in_layer[1].item(), self.hidden_channels], device=self.device, dtype=torch.int64) * -1
+        self.cached_embedding = torch.tensor([])
 
     def lookup_and_load(self, batch, num_layer):
         nodes = batch.sub_to_full[:batch.num_node_in_layer[1].item()]

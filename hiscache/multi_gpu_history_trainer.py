@@ -50,6 +50,9 @@ class MultiGpuHistoryTrainer(cxgnncomp.Trainer):
 
     def load(self, batches):
         for i in range(self.num_device):
+            self.optimizers[i].zero_grad()
+
+        for i in range(self.num_device):
             batches[i].y = batches[i].ys[i]
             batches[i].ptr = batches[i].ptrs[i]
             batches[i].idx = batches[i].idxs[i]
@@ -57,12 +60,12 @@ class MultiGpuHistoryTrainer(cxgnncomp.Trainer):
 
         for i in range(self.num_device):
             torch.cuda.set_device(i)
-            self.tables[i].lookup_and_load(batches[i], self.num_layer)
+            self.tables[i].lookup_and_load_rand(batches[i], self.num_layer)
 
     def run_forward(self, batches):
         outs = []
         for i in range(self.num_device):
-            self.optimizers[i].zero_grad()
+            # self.optimizers[i].zero_grad()
             out = self.models[i](batches[i])
             outs.append(out)
         return outs
@@ -102,10 +105,12 @@ class MultiGpuHistoryTrainer(cxgnncomp.Trainer):
             batches.append(batch)
             if len(batches) == self.num_device:
                 self.load(batches)
+                for it, b in enumerate(batches):
+                    b.x = torch.randn([b.sub_to_full.shape[0], 128], device=it)
                 outs = self.run_forward(batches)
                 grad = self.run_backward(batches, outs)
                 self.update_grad(grad)
-                self.update_history(batches)
+                # self.update_history(batches)
                 batches = []
         torch.cuda.synchronize()
         log.info(f"epoch time: {time.time()-t0}")

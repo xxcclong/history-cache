@@ -79,7 +79,7 @@ link_directories(${project_THIRD_PARTY_DIR}/yaml)
 
 add_library(${PROJECT_NAME} SHARED ${project_SOURCES} ${project_HEADERS})
 
-find_package(spdlog REQUIRED PATHS /home/huangkz/repos/spdlog/build/)
+find_package(spdlog REQUIRED PATHS /home/ubuntu/repos/CxGNN-DL/src/third_party/spdlog/build)
 find_package(Torch REQUIRED)
 find_package(CUDA REQUIRED)
 find_package(PythonLibs REQUIRED)
