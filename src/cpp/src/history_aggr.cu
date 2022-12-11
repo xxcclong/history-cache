@@ -1,3 +1,5 @@
+#include <c10/cuda/CUDAStream.h>
+
 #include "common.h"
 #include "history_aggr.h"
 
@@ -408,6 +410,8 @@ torch::Tensor historyForwardImpl(AutogradContext *ctx, torch::Tensor input,
   if (num_node == 0) num_node = ptr.sizes()[0] - 1;
   ctx->saved_data["num_node"] = (int64_t)num_node;
 
+  auto stream = at::cuda::getCurrentCUDAStream(ptr.device().index()).stream();
+
   int feat_len = input.sizes().back();
   ASSERT(input.device().index() >= 0);
   checkCudaErrors(cudaSetDevice(input.device().index()));
@@ -436,7 +440,7 @@ torch::Tensor historyForwardImpl(AutogradContext *ctx, torch::Tensor input,
     if (history_size == 0) {
       ASSERT(false);
     } else
-      gen_fwd_history_v2<<<grid, block>>>(
+      gen_fwd_history_v2<<<grid, block, 0, stream>>>(
           ptr.data<Index>(), idx.data<Index>(), input.data<float>(),
           history_map.data<Index>(), history_buffer.data<float>(),
           output.data<float>(), num_node, feat_len, history_size);
@@ -444,7 +448,7 @@ torch::Tensor historyForwardImpl(AutogradContext *ctx, torch::Tensor input,
     if (history_size == 0) {
       ASSERT(false);
     } else {
-      gen_fwd_history_v2_edge_value<<<grid, block>>>(
+      gen_fwd_history_v2_edge_value<<<grid, block, 0, stream>>>(
           ptr.data<Index>(), idx.data<Index>(), edge_value.data<float>(),
           input.data<float>(), history_map.data<Index>(),
           history_buffer.data<float>(), output.data<float>(), num_node,
@@ -456,7 +460,7 @@ torch::Tensor historyForwardImpl(AutogradContext *ctx, torch::Tensor input,
     } else {
       grid.x = (num_node * num_head + (block_size / ceil_feat_len) - 1) /
                (block_size / ceil_feat_len);
-      gen_fwd_history_v2_edge_value_multi_head<<<grid, block>>>(
+      gen_fwd_history_v2_edge_value_multi_head<<<grid, block, 0, stream>>>(
           ptr.data<Index>(), idx.data<Index>(), edge_value.data<float>(),
           input.data<float>(), history_map.data<Index>(),
           history_buffer.data<float>(), output.data<float>(), num_node,
@@ -499,6 +503,9 @@ tensor_list historyBackwardImpl(AutogradContext *ctx,
   auto grad_input = torch::zeros_like(input);
   auto grad_history = torch::zeros_like(saved[1]);
 
+  auto stream =
+      at::cuda::getCurrentCUDAStream(grad_input.device().index()).stream();
+
   int num_node = ctx->saved_data["num_node"].toInt();
   int hsize = ctx->saved_data["hsize"].toInt();
   int feat_len = input.sizes().back();
@@ -517,7 +524,7 @@ tensor_list historyBackwardImpl(AutogradContext *ctx,
     if (history_size == 0) {
       ASSERT(false);
     } else {
-      gen_bwd_history_grad_v2<<<grid, block>>>(
+      gen_bwd_history_grad_v2<<<grid, block, 0, stream>>>(
           ptr, idx, grad_output.data<float>(), history_map, input.data<float>(),
           grad_input.data<float>(), grad_history.data<float>(), num_node,
           feat_len, hsize);
@@ -528,14 +535,15 @@ tensor_list historyBackwardImpl(AutogradContext *ctx,
     } else {
       if (edge_value.requires_grad()) {
         auto edge_grad = torch::zeros_like(edge_value);
-        gen_bwd_history_grad_v2_edge_value_edge_grad<<<grid, block>>>(
+        gen_bwd_history_grad_v2_edge_value_edge_grad<<<grid, block, 0,
+                                                       stream>>>(
             ptr, idx, edge_value.data<float>(), grad_output.data<float>(),
             history_map, input.data<float>(), grad_input.data<float>(),
             grad_history.data<float>(), num_node, feat_len, hsize,
             edge_grad.data<float>());
         return {grad_input, grad_history, edge_grad};
       } else {
-        gen_bwd_history_grad_v2_edge_value<<<grid, block>>>(
+        gen_bwd_history_grad_v2_edge_value<<<grid, block, 0, stream>>>(
             ptr, idx, edge_value.data<float>(), grad_output.data<float>(),
             history_map, input.data<float>(), grad_input.data<float>(),
             grad_history.data<float>(), num_node, feat_len, hsize);
@@ -550,15 +558,16 @@ tensor_list historyBackwardImpl(AutogradContext *ctx,
                (block_size / ceil_feat_len);
       if (edge_value.requires_grad()) {
         auto edge_grad = torch::zeros_like(edge_value);
-        gen_bwd_history_grad_v2_edge_value_multi_head_edge_grad<<<grid,
-                                                                  block>>>(
+        gen_bwd_history_grad_v2_edge_value_multi_head_edge_grad<<<grid, block,
+                                                                  0, stream>>>(
             ptr, idx, edge_value.data<float>(), grad_output.data<float>(),
             history_map, input.data<float>(), grad_input.data<float>(),
             grad_history.data<float>(), num_node, feat_len, hsize, num_head,
             edge_grad.data<float>());
         return {grad_input, grad_history, edge_grad};
       } else {
-        gen_bwd_history_grad_v2_edge_value_multi_head<<<grid, block>>>(
+        gen_bwd_history_grad_v2_edge_value_multi_head<<<grid, block, 0,
+                                                        stream>>>(
             ptr, idx, edge_value.data<float>(), grad_output.data<float>(),
             history_map, input.data<float>(), grad_input.data<float>(),
             grad_history.data<float>(), num_node, feat_len, hsize, num_head);

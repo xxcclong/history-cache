@@ -8,7 +8,7 @@ import time
 
 
 class HistoryCache:
-    def __init__(self, uvm, config, device_id=-1):
+    def __init__(self, uvm, config, mode, device_id=-1):
         self.in_channels = config.dl.dataset.feature_dim
         self.out_channels = config.dl.dataset.num_classes
         self.hidden_channels = config.train.model.hidden_dim
@@ -27,18 +27,19 @@ class HistoryCache:
         self.rate = float(config.history['rate'])
         assert self.method in ["random", "grad", "staleness"]
         self.staleness_thres = int(config.history.staleness_thres)
-        assert self.staleness_thres > 0
         self.limit = float(config.history.limit)
         log.warn("limiting cache size to {}GB".format(self.limit))
 
         self.full2embed = torch.ones(
-            [self.total_num_node * 2, ], dtype=torch.int64, device=self.device) * -1
+            [self.total_num_node * 2 + 1, ], dtype=torch.int64, device=self.device) * -1
         # self.header = torch.zeros([1], dtype=torch.int64, device=self.device)
         self.header = 0
         self.produced_embedding = None  # embedding that produced from training iterations
-        self.allocate()
-        self.fill(config)
+        self.feat_mode = mode
         self.uvm = uvm
+        if "history" in self.feat_mode:
+            self.allocate()
+            self.fill(config)
 
     def allocate(self):
         t0 = time.time()
@@ -78,9 +79,9 @@ class HistoryCache:
         else:
             cache_indice = indice[-self.overall_feat_num:]
         new_id = torch.arange(0, len(cache_indice)).to(self.device)
-        self.full2embed[self.total_num_node +
-                        cache_indice.to(self.device)] = new_id
-        #
+        self.feat2full = cache_indice.to(self.device) + self.total_num_node
+        self.full2embed[self.feat2full] = new_id
+        # self.embed2full
         buffer_path = path.join(str(config["dl"]["dataset"]["path"]), "processed",
                                 "node_features.dat")
         dset_name = config.dl.dataset.name.lower()
@@ -91,7 +92,7 @@ class HistoryCache:
         else:
             self.dtype = np.float32
             self.torch_dtype = torch.float32
-        if dset_name in ["twitter", "friendster", "mag240m_384", "mag240m_768", "rmag240m_384", "rmag240m_768"]:
+        if "mmap" in self.feat_mode or dset_name in ["twitter", "friendster", "mag240m_384", "mag240m_768", "rmag240m_384", "rmag240m_768"]:
             # tmp_buffer = torch.randn(
             #     [self.total_num_node, self.in_channels], dtype=self.torch_dtype)
             self.buffer.view(-1, self.in_channels)[-cache_indice.shape[0]:] = torch.randn(
@@ -110,6 +111,8 @@ class HistoryCache:
 
     @torch.no_grad()  # important for removing grad from computation graph
     def update_history(self, batch, glb_iter):
+        if not "history" in self.feat_mode or self.staleness_thres == 0:
+            return
         num_node = batch.num_node_in_layer[1].item()
         if (glb_iter % self.staleness_thres) == 0:
             self.header = 0
@@ -133,6 +136,11 @@ class HistoryCache:
         num_to_record = embed_to_record.shape[0]
         self.buffer.view(-1, self.hidden_channels)[
             self.header: self.header+num_to_record] = embed_to_record
+
+        begin = self.header * self.hidden_channels // self.in_channels
+        end = math.ceil((self.header + num_to_record) *
+                        self.hidden_channels / self.in_channels)
+        self.full2embed[self.feat2full[begin: end]] = -1
 
         # invalidate the cache that are about to be overwritten
         tmp = self.embed2full[self.header: self.header + num_to_record]
@@ -162,7 +170,26 @@ class HistoryCache:
 
     # infer both node features and history embeddings
 
-    def lookup_and_load(self, batch, num_layer):
+    def lookup_and_load(self, batch, num_layer, load_all=False):
+        if load_all:
+            self.sub2feat = self.full2embed[batch.sub_to_full + self.total_num_node]
+            load_mask = self.sub2feat == -1
+            batch.x = self.uvm.masked_get(batch.sub_to_full, load_mask)
+            cached_feat = self.buffer.view(-1, self.in_channels)[self.sub2feat]
+            cached_feat[load_mask] = 0
+            batch.x += cached_feat
+            return
+
+        if not "history" in self.feat_mode:
+            self.sub2embed = torch.ones(
+                [batch.num_node_in_layer[1].item()], dtype=torch.int64, device=self.device) * -1
+            self.cached_embedding = torch.tensor([])
+            if self.feat_mode in ["uvm", "mmap"]:
+                batch.x = self.uvm.get(batch.sub_to_full)
+                # batch.x = torch.randn([batch.sub_to_full.shape[0], self.in_channels], device=self.device)
+            return
+
+
         nodes = batch.sub_to_full[:batch.num_node_in_layer[1].item()]
         input_nodes = batch.sub_to_full
         self.sub2embed = self.full2embed[nodes]
@@ -188,8 +215,11 @@ class HistoryCache:
         if self.ana:
             log.info(
                 f"prune-by-his: {torch.sum(~self.used_masks[0])} prune-by-feat: {torch.sum(hit_feat_mask)} prune-by-both: {torch.sum(~load_mask)} overall: {batch.sub_to_full.shape[0]}")
+            embed_num = torch.sum(self.full2embed[:self.total_num_node] != -1)
+            feat_num = torch.sum(self.full2embed[self.total_num_node:] != -1)
+            overall_size = feat_num * self.in_channels + embed_num * self.hidden_channels
             log.info(
-                f"embed-num: {torch.sum(self.full2embed[:self.total_num_node] != -1)} feat-num: {torch.sum(self.full2embed[self.total_num_node:] != -1)}")
+                f"embed-num: {embed_num} feat-num: {feat_num} overall: {overall_size} buffersize: {self.buffer.shape[0]}")
         # 2. load raw features
         x = self.uvm.masked_get(batch.sub_to_full, load_mask)
         # 3. load hit raw feature cache

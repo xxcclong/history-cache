@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <c10/cuda/CUDAStream.h>
 
 #include "grad_check.h"
 
@@ -112,9 +113,11 @@ std::vector<torch::Tensor> count_history_reconstruct(
   int block_size = 512;
   int num_per_block = block_size / 32;
   Index ptr_size = ptr.sizes()[0] - 1;
+  auto stream =
+      at::cuda::getCurrentCUDAStream(ptr.device().index()).stream();
   for (int i = 0; i < num_layer; ++i) {
     count_history_kernel<<<(ptr_size + num_per_block - 1) / num_per_block,
-                           block_size>>>(
+                           block_size, 0, stream>>>(
         ptr.data<Index>(), idx.data<Index>(),
         i != 1  // (num_layer - i > num_history_layer)
             ? nullptr

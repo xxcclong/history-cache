@@ -33,7 +33,7 @@ class MultiGpuHistoryTrainer(cxgnncomp.Trainer):
         self.optimizers = []
         self.schedulers = []
         for i in range(self.num_device):
-            table = HistoryCache(config=config, uvm=self.uvm, device_id=i)
+            table = HistoryCache(config=config, uvm=self.uvm, mode=self.loader.feat_mode, device_id=i)
             model = get_model(config, table)
             model = model.to(i)
             optimizer = cxgnncomp.get_optimizer(config.train, model)
@@ -50,6 +50,9 @@ class MultiGpuHistoryTrainer(cxgnncomp.Trainer):
 
     def load(self, batches):
         for i in range(self.num_device):
+            self.optimizers[i].zero_grad()
+
+        for i in range(self.num_device):
             batches[i].y = batches[i].ys[i]
             batches[i].ptr = batches[i].ptrs[i]
             batches[i].idx = batches[i].idxs[i]
@@ -60,35 +63,57 @@ class MultiGpuHistoryTrainer(cxgnncomp.Trainer):
             self.tables[i].lookup_and_load(batches[i], self.num_layer)
 
     def run_forward(self, batches):
+        times = []
+        t0 = time.time()
         outs = []
         for i in range(self.num_device):
-            self.optimizers[i].zero_grad()
+            torch.cuda.set_device(i)
             out = self.models[i](batches[i])
             outs.append(out)
+            times.append(time.time() - t0)
+            # torch.cuda.synchronize(i)
+        # log.info(f"forward time: {times}")
         return outs
 
     def run_backward(self, batches, outs):
+        times = []
+        t0 = time.time()
         grad = [[] for i in range(self.num_para)]
         for i in range(self.num_device):
             loss = self.loss_fn(outs[i], batches[i].y)
             loss.backward()
             for a, b in self.models[i].named_parameters():
                 grad[self.parameter_name_to_id[a]].append(b.grad)
+            times.append(time.time() - t0)
+            # torch.cuda.synchronize(i)
+        # log.info(f"backward time: {times}")
         return grad
 
     def update_grad(self, grad):
+        times = []
+        t0 = time.time()
         for i in range(self.num_para):
             torch.cuda.nccl.all_reduce(grad[i])
+            times.append(time.time() - t0)
+        # log.info(f"all_reduce time: {times}")
+        times = []
+        t0 = time.time()
         for dev_it in range(self.num_device):
             torch.cuda.set_device(dev_it)
             for para in self.models[dev_it].parameters():
                 para.grad /= self.num_device
             self.optimizers[dev_it].step()
             self.schedulers[dev_it].step()
+            times.append(time.time() - t0)
+        # log.info(f"update time: {times}")
 
     def update_history(self, batches):
+        times = []
+        t0 = time.time()
         for i in range(self.num_device):
             self.tables[i].update_history(batches[i], self.glb_iter)
+            times.append(time.time() - t0)
+        # log.info(f"update_history time: {times}")
         self.glb_iter += 1
 
     def cxg_train_epoch(self):
@@ -102,12 +127,16 @@ class MultiGpuHistoryTrainer(cxgnncomp.Trainer):
             batches.append(batch)
             if len(batches) == self.num_device:
                 self.load(batches)
+                # self.run_nonsense(batches)
                 outs = self.run_forward(batches)
                 grad = self.run_backward(batches, outs)
+                # batches = []
+                # continue
                 self.update_grad(grad)
                 self.update_history(batches)
                 batches = []
-        torch.cuda.synchronize()
+        for i in range(self.num_device):
+            torch.cuda.synchronize(i)
         log.info(f"epoch time: {time.time()-t0}")
 
     def train(self):
