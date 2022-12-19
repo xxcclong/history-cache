@@ -170,12 +170,22 @@ class HistoryTrainer(cxgnncomp.Trainer):
         total = sum(times.values())
         log.info(f"load-time: {times['load']}, forward-time: {times['forward']}, loss-time: {times['loss']}, backward-time: {times['backward']}, step-time: {times['step']}, update-time: {times['update']}, sample-time: {times['sample']} total-time: {total}",)
 
+    def batch_to_file(self, batch, filename):
+        output_dict = {}
+        output_dict["ptr"] = batch.ptr.cpu()
+        output_dict["idx"] = batch.idx.cpu()
+        output_dict["num_node_in_layer"] = batch.num_node_in_layer.cpu()
+        # output_dict["num_edge_in_layer"] = batch.num_edge_in_layer.cpu()
+        torch.save(output_dict, filename)
+        exit()
+
     def cxg_train_epoch(self):
         self.model.train()
         tepoch = time.time()
         for batch in tqdm(
                 self.loader.train_loader,
                 bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
+            # self.batch_to_file(batch, f"papers100M-{batch.num_node_in_layer[0]}.pt")
             self.optimizer.zero_grad()
             self.table.lookup_and_load(batch, len(self.model.convs))
             out = self.model(batch)
@@ -235,7 +245,8 @@ class HistoryTrainer(cxgnncomp.Trainer):
                 assert False
             if epoch >= self.config.train.train.eval_begin:
                 self.cxg_eval_epoch(split="val")
-                self.cxg_eval_epoch(split="test")
+                if not "mag" in self.config.dl.dataset.name.lower():
+                    self.cxg_eval_epoch(split="test")
         if len(self.val_metrics) > 0:
             self.val_metrics = np.array(self.val_metrics)
             self.test_metrics = np.array(self.test_metrics)
