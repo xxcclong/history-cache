@@ -76,10 +76,12 @@ class HistoryCache:
         log.info("load indice")
         # assert overall_num_node >= self.overall_feat_num
         if self.overall_feat_num > self.total_num_node:
-            cache_indice = indice
+            cache_indice = indice # cache everything
         else:
             cache_indice = indice[-self.overall_feat_num:]
         new_id = torch.arange(0, len(cache_indice)).to(self.device)
+        if self.overall_feat_num > self.total_num_node:
+            new_id += self.overall_feat_num - self.total_num_node
         self.feat2full = cache_indice.to(self.device) + self.total_num_node
         self.full2embed[self.feat2full] = new_id
         # self.embed2full
@@ -99,8 +101,6 @@ class HistoryCache:
                 [cache_indice.shape[0], self.in_channels])
         else:
             log.info("begin loading feature file")
-            # tmp_buffer = torch.from_numpy(
-            #     np.fromfile(buffer_path, dtype=self.load_dtype)).view(self.total_num_node, self.in_channels)
             tmp_buffer = self.uvm.buffer[cache_indice].to(torch.float32)
             log.info("end loading feature file")
             assert tmp_buffer.shape[1] == self.in_channels
@@ -194,7 +194,8 @@ class HistoryCache:
             self.cached_embedding = torch.tensor([])
             if self.feat_mode in ["uvm", "mmap"]:
                 batch.x = self.uvm.get(batch.sub_to_full)
-                # batch.x = torch.randn([batch.sub_to_full.shape[0], self.in_channels], device=self.device)
+            else:
+                assert False
             return
 
         nodes = batch.sub_to_full[:batch.num_node_in_layer[1].item()]
