@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import dgl.nn.pytorch.conv as dglnn
 from .util import log
 from torch_geometric.nn.inits import glorot        
+import time
 
 
 class DGLRGCNHistory(torch.nn.Module):
@@ -204,21 +205,71 @@ class MyRGCNConvHistory(torch.nn.Module):
     def reset_parameters(self):
         glorot(self.linear)
 
-    def forward(self, x, ptr, idx, edge_types, history_map, history_buffer, history_size,
+    def forward(self, x, ptr, idx, edge_types, count, history_map, history_buffer, used_mask, history_size,
                 num_node):
-        # if history_size == 0:
-        #     out = cxgnncomp_backend.sage_mean_forward(x, ptr, idx, num_node)
-        # else:
-        #     # assert False
-        #     out = hiscache_backend.aggr_forward_history(
-        #             x, ptr, idx, history_map, history_buffer, history_size,
-        #             num_node)
-        # out = torch.mm(out, self.linear[0])
         out = cxgnncomp.RGCNOP.apply(x, self.linear, ptr, idx, edge_types, num_node)
         deg = ptr[1:] - ptr[:-1]
         out = out / deg.unsqueeze(-1)[:out.shape[0]]
-        # if history_map.shape[0] > 0:
-        #     print(history_map.shape, history_buffer.shape, history_size, num_node, torch.max(history_map))
+        if history_size > 0:
+            out[history_map != -1] = history_buffer[history_map != -1]
+        his = out
+        if self.need_grad and self.training and history_size > 0:
+            his.retain_grad()
+        return out, his
+
+class MyRGCNConvHistory2(torch.nn.Module):
+
+    def __init__(self,
+                 in_channels,
+                 hidden_channels,
+                 num_rel,
+                 need_grad,
+                 ):
+        super(MyRGCNConvHistory2, self).__init__()
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.num_rel = num_rel
+        self.linear = torch.nn.Parameter(
+            torch.randn(num_rel, in_channels, hidden_channels))
+        log.info("linear shape: {}".format(self.linear.shape))
+        self.register_parameter("rel_weight", self.linear)
+        self.reset_parameters()
+        self.need_grad = need_grad
+
+    def reset_parameters(self):
+        glorot(self.linear)
+
+    def forward(self, x, ptr, idx, edge_types, count, history_map, history_buffer, used_mask, history_size,
+                num_node):
+        num_edge = ptr[num_node]
+        deg = ptr[1:num_node + 1] - ptr[:num_node]
+        dst = torch.arange(num_node, device=x.device).repeat_interleave(deg)
+        src = idx[:num_edge]
+        rel = edge_types[:num_edge]
+        if used_mask is not None:
+            rel[~used_mask[src]] = self.num_rel + 0 # exclude the computation of unused ones
+        sorted, perm = torch.sort(rel)
+        src = src[perm]
+        dst = dst[perm]
+        # count = []
+        # for i in range(self.num_rel + 1):
+        #     count.append((sorted == i).sum().item())
+        # print("count num", torch.max(rel), torch.min(rel))
+        torch.cuda.synchronize()
+        t0 = time.time()
+        count = hiscache_backend.count_num(rel, self.num_rel).cpu()
+        t1 = time.time()
+        print("count num time", t1 - t0, num_edge, num_node, count)
+        # print(count)
+        # count = sorted.bincount(minlength=self.num_rel).cpu()
+        # torch.cuda.synchronize()
+        out = cxgnncomp.RGCNOP_sorted(x, self.linear, src, dst, count, num_node)
+
+        # out = cxgnncomp.aggr_rel_direct(x, ptr, idx, self.linear, edge_types.to(torch.int32), num_node,
+        #                            self.num_rel)
+
+
+        out = out / deg.unsqueeze(-1)
         if history_size > 0:
             out[history_map != -1] = history_buffer[history_map != -1]
         his = out
@@ -300,8 +351,14 @@ class HistoryRGCN(torch.nn.Module):
     def forward(self, batch):
         x = batch.x
         if self.gen_rel:
+            etypes = batch.edge_type
+            # assert etypes is not None
             etypes = cxgnncomp_backend.gen_edge_type_mag240m(
                 batch.ptr, batch.idx, batch.sub_to_full)
+            # print("ptr", batch.ptr, batch.ptr.shape, torch.max(batch.ptr), torch.min(batch.ptr))
+            # print("idx", batch.idx, batch.idx.shape, torch.max(batch.idx), torch.min(batch.idx))
+            # print("sub_to_full", batch.sub_to_full, batch.sub_to_full.shape, torch.max(batch.sub_to_full), torch.min(batch.sub_to_full))
+            # print("generated etypes,", etypes.shape, etypes, torch.max(etypes), torch.min(etypes))
         else:
             etypes = torch.randint(
                 0,
@@ -310,15 +367,21 @@ class HistoryRGCN(torch.nn.Module):
         for i, conv in enumerate(self.convs[:-1]):
             if self.training and i == self.num_layers - 2:
                 x, his = conv(x, batch.ptr, batch.idx, etypes[:batch.num_edge_in_layer[self.num_layers - 1 - i]],
+                              batch.typed_num_node_in_layer[i * self.num_rel : (i + 1) * self.num_rel] if batch.typed_num_node_in_layer is not None else None,
                               self.table.sub2embed,
                               self.table.cached_embedding,
+                              self.table.used_masks[i] if self.table.used_masks is not None else None,
                               self.hidden_channels,
                               batch.num_node_in_layer[self.num_layers - 1 - i])
                 self.table.produced_embedding = his
                 self.table.produced_embedding.retain_grad()
             else:
-                x, his = conv(x, batch.ptr, batch.idx, etypes[:batch.num_edge_in_layer[self.num_layers - 1 - i]], torch.tensor([]),
-                              torch.tensor([]), 0,
+                x, his = conv(x, batch.ptr, batch.idx, etypes[:batch.num_edge_in_layer[self.num_layers - 1 - i]], 
+                              batch.typed_num_node_in_layer[i * self.num_rel : (i + 1) * self.num_rel] if batch.typed_num_node_in_layer is not None else None,
+                              torch.tensor([]),
+                              torch.tensor([]), 
+                              self.table.used_masks[i] if self.table.used_masks is not None else None,
+                              0,
                               batch.num_node_in_layer[self.num_layers - 1 - i])
             x = self.bns[i](x)
             x = F.relu(x)
@@ -326,8 +389,12 @@ class HistoryRGCN(torch.nn.Module):
         if self.training and self.last_layer_history:
             assert False
         else:
-            x, his = self.convs[-1](x, batch.ptr, batch.idx, etypes[:batch.num_edge_in_layer[0]], torch.tensor([]),
-                                    torch.tensor([]), 0,
+            x, his = self.convs[-1](x, batch.ptr, batch.idx, etypes[:batch.num_edge_in_layer[0]], 
+                                    batch.typed_num_node_in_layer[i * self.num_rel : (i + 1) * self.num_rel] if batch.typed_num_node_in_layer is not None else None,
+                                    torch.tensor([]),
+                                    torch.tensor([]), 
+                                    self.table.used_masks[-2] if self.table.used_masks is not None else None,
+                                    0,
                                     batch.num_node_in_layer[0])
         return x.log_softmax(dim=-1)
 
@@ -355,7 +422,7 @@ class HistoryRGCN(torch.nn.Module):
     def init_history_conv(self, in_channels, out_channels, **kwargs):
         assert "need_grad" in kwargs
         assert "num_rel" in kwargs
-        return MyRGCNConvHistory(in_channels, out_channels, **kwargs)
+        return MyRGCNConvHistory2(in_channels, out_channels, **kwargs)
 
     def reset_parameters(self):
         for conv in self.convs:

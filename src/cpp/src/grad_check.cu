@@ -161,3 +161,22 @@ torch::Tensor get_graph_structure_score(torch::Tensor ptr, torch::Tensor idx,
   }
   return output;
 }
+
+__global__ void count_kernel(Index *arr, int *output, Index arr_size) {
+  int threadid = blockIdx.x * blockDim.x + threadIdx.x;
+  if (threadid >= arr_size) return;
+  Index a = arr[threadid];
+  if (a != 0) {
+    atomicAdd(output + arr[threadid], 1);
+  }
+}
+
+torch::Tensor count_num(torch::Tensor arr, Index mmax) {
+  auto output = torch::zeros({mmax + 1}, torch::TensorOptions().dtype(torch::kInt32).requires_grad(false).device(arr.device()));
+  int block_size = 512;
+  int num_per_block = block_size;
+  Index arr_size = arr.sizes()[0];
+  count_kernel<<<(arr_size + num_per_block - 1) / num_per_block, block_size>>>(
+      arr.data<Index>(), output.data<int>(), arr_size);
+  return output;
+}

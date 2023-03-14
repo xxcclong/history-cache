@@ -185,6 +185,7 @@ class HistoryTrainer(cxgnncomp.Trainer):
         for batch in tqdm(
                 self.loader.train_loader,
                 bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
+            # continue
             # self.batch_to_file(batch, f"papers100M-{batch.num_node_in_layer[0]}.pt")
             self.optimizer.zero_grad()
             self.table.lookup_and_load(batch, len(self.model.convs))

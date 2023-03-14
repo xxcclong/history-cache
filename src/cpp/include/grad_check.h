@@ -23,4 +23,6 @@ torch::Tensor get_graph_structure_score(torch::Tensor ptr, torch::Tensor idx,
                                         Index num_node, Index num_seed,
                                         int num_layer);
 
+torch::Tensor count_num(torch::Tensor arr, Index mmax);
+
 #endif

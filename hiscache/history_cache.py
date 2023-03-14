@@ -38,6 +38,7 @@ class HistoryCache:
         self.feat_mode = mode
         self.uvm = uvm
         self.glb_iter = 0
+        self.used_masks = None
         if "history" in self.feat_mode:
             self.allocate()
             self.fill(config)
