@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 
+#include "comm.h"
 #include "grad_check.h"
 #include "history_aggr.h"
 namespace py = pybind11;
@@ -13,6 +14,7 @@ void init_grad_check(py::module &m) {
   m.def("aggr_forward_history", &aggr_forward_history, "");
   m.def("aggr_forward_history_edge_value", &aggr_forward_history_edge_value,
         "");
+  m.def("p2psend", &p2psend, "");
 }
 
 PYBIND11_MODULE(hiscache_backend, m) {
