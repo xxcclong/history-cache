@@ -6,4 +6,6 @@
 
 using torch::Tensor;
 
-Tensor p2psend(Tensor t0, int target_device);
+void p2psend(Tensor tsrc, Tensor tdst, int num_element, int target_device);
+
+Tensor p2psend_gentensor(Tensor tsrc, int num_element, int target_device);

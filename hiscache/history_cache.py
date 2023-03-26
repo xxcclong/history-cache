@@ -62,16 +62,25 @@ class HistoryCache:
             4 if self.uvm.buffer.dtype == torch.float32 else 2)
         max_byte = torch.cuda.mem_get_info()[0]
         assert needed_byte < max_byte
-        allocated_num = self.uvm.buffer.shape[0] // self.num_device
-        if self.device_id == self.num_device - 1:
-            self.distrbuted_buffer = self.uvm.buffer[allocated_num * self.
-                                                     device_id:allocated_num *
-                                                     (self.device_id + 1)].to(
-                                                         self.device)
-        else:
-            self.distrbuted_buffer = self.uvm.buffer[allocated_num *
-                                                     self.device_id:].to(
-                                                         self.device)
+
+        # partition at feature dimension
+        allocated_num = self.uvm.buffer.shape[1] // self.num_device
+        self.distributed_buffer = self.uvm.buffer[:, self.device_id *
+                                                  allocated_num:
+                                                  (self.device_id) *
+                                                  allocated_num].to(
+                                                      self.device)
+        # partition at node dimension
+        # allocated_num = self.uvm.buffer.shape[0] // self.num_device
+        # if self.device_id != self.num_device - 1:
+        #     self.distributed_buffer = self.uvm.buffer[allocated_num * self.
+        #                                              device_id:allocated_num *
+        #                                              (self.device_id + 1)].to(
+        #                                                  self.device)
+        # else:
+        #     self.distributed_buffer = self.uvm.buffer[allocated_num *
+        #                                              self.device_id:].to(
+        #                                                  self.device)
         t1 = time.time()
         log.info(
             f"Initializing distributed store for device {self.device_id} takes {t1 - t0} seconds"
@@ -237,7 +246,7 @@ class HistoryCache:
                                             self.total_num_node]
             load_mask = self.sub2feat == -1
             if self.distributed_store:  # load from other GPUs
-                pass
+                assert False
             else:  # load from UVM
                 batch.x = self.uvm.masked_get(batch.sub_to_full,
                                               load_mask)  # load from UVM
@@ -245,18 +254,23 @@ class HistoryCache:
                 -1, self.in_channels)[self.sub2feat]  # load from feat cache
             cached_feat[load_mask] = 0
             batch.x += cached_feat  # combine feat from UVM and feat cache
-            return
+            return None
 
         if not "history" in self.feat_mode:
             self.sub2embed = torch.ones([batch.num_node_in_layer[1].item()],
                                         dtype=torch.int64,
                                         device=self.device) * -1
             self.cached_embedding = torch.tensor([])
-            if self.feat_mode in ["uvm", "mmap"]:
-                batch.x = self.uvm.get(batch.sub_to_full)
+            if self.distributed_store:
+                return torch.ones(batch.sub_to_full.shape[0],
+                                  device=self.device,
+                                  dtype=torch.bool)
             else:
-                assert False
-            return
+                if self.feat_mode in ["uvm", "mmap"]:
+                    batch.x = self.uvm.get(batch.sub_to_full)
+                else:
+                    assert False
+                return None
 
         nodes = batch.sub_to_full[:batch.num_node_in_layer[1].item()]
         input_nodes = batch.sub_to_full
@@ -291,13 +305,20 @@ class HistoryCache:
                 f"embed-num: {embed_num} feat-num: {feat_num} overall: {overall_size} buffersize: {self.buffer.shape[0]}"
             )
         self.glb_iter += 1
-        # 2. load raw features
-        x = self.uvm.masked_get(batch.sub_to_full, load_mask)
-        # 3. load hit raw feature cache
-        # x[hit_feat_mask] = self.buffer.view(-1, self.in_channels)[
-        #     self.sub2feat[hit_feat_mask]]
+        if not self.distributed_store:
+            # 2. load raw features
+            x = self.uvm.masked_get(batch.sub_to_full, load_mask)
+            # 3. load hit raw feature cache
+            # x[hit_feat_mask] = self.buffer.view(-1, self.in_channels)[
+            #     self.sub2feat[hit_feat_mask]]
 
-        cached_feat = self.buffer.view(-1, self.in_channels)[self.sub2feat]
-        cached_feat[~hit_feat_mask] = 0
-        x += cached_feat
-        batch.x = x
+            cached_feat = self.buffer.view(-1, self.in_channels)[self.sub2feat]
+            cached_feat[~hit_feat_mask] = 0
+            x += cached_feat
+            batch.x = x
+            return None
+        else:
+            cached_feat = self.buffer.view(-1, self.in_channels)[self.sub2feat]
+            cached_feat[~hit_feat_mask] = 0
+            batch.x = cached_feat
+            return load_mask  # return the mask of feature that needs communication

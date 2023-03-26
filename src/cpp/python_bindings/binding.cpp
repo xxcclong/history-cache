@@ -15,6 +15,7 @@ void init_grad_check(py::module &m) {
   m.def("aggr_forward_history_edge_value", &aggr_forward_history_edge_value,
         "");
   m.def("p2psend", &p2psend, "");
+  m.def("p2psend_gentensor", &p2psend_gentensor, "");
 }
 
 PYBIND11_MODULE(hiscache_backend, m) {
