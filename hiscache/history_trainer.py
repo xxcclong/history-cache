@@ -24,8 +24,9 @@ class HistoryTrainer(cxgnncomp.Trainer):
             self.uvm = None
         else:
             self.uvm = cxgnndl.UVM(config.dl)
-        self.table = HistoryCache(
-            uvm=self.uvm, config=config, mode=self.feat_mode)
+        self.table = HistoryCache(uvm=self.uvm,
+                                  config=config,
+                                  mode=self.feat_mode)
         self.device = torch.device(config.dl.device)
         self.model = get_model(config, self.table)
         self.model = self.model.to(self.device)
@@ -41,6 +42,7 @@ class HistoryTrainer(cxgnncomp.Trainer):
         self.val_metrics = []
         self.test_metrics = []
         self.best_metric = 0
+        self.cached_emd_id = None
 
         # self.stream = torch.cuda.Stream(device=self.device)  # Create a new stream.
 
@@ -70,8 +72,8 @@ class HistoryTrainer(cxgnncomp.Trainer):
             log.info(f"num_uses: {arr}")
             log.info(batch.num_node_in_layer)
             degree = batch.ptr[1:] - batch.ptr[:-1]
-            dst = torch.arange(
-                batch.ptr.shape[0] - 1).cuda().repeat_interleave(degree)
+            dst = torch.arange(batch.ptr.shape[0] -
+                               1).cuda().repeat_interleave(degree)
             remain = self.used_masks[1][dst].sum().item()
             log.info(f"remain: {remain / batch.idx.shape[0]}")
             # log.info(f"used masks: {self.used_masks[0].sum()} {self.used_masks[0].shape}")
@@ -168,7 +170,9 @@ class HistoryTrainer(cxgnncomp.Trainer):
         torch.cuda.synchronize()
         log.info(f"epoch time: {time.time()-tepoch}")
         total = sum(times.values())
-        log.info(f"load-time: {times['load']}, forward-time: {times['forward']}, loss-time: {times['loss']}, backward-time: {times['backward']}, step-time: {times['step']}, update-time: {times['update']}, sample-time: {times['sample']} total-time: {total}",)
+        log.info(
+            f"load-time: {times['load']}, forward-time: {times['forward']}, loss-time: {times['loss']}, backward-time: {times['backward']}, step-time: {times['step']}, update-time: {times['update']}, sample-time: {times['sample']} total-time: {total}",
+        )
 
     def batch_to_file(self, batch, filename):
         output_dict = {}
@@ -177,6 +181,39 @@ class HistoryTrainer(cxgnncomp.Trainer):
         output_dict["num_node_in_layer"] = batch.num_node_in_layer.cpu()
         # output_dict["num_edge_in_layer"] = batch.num_edge_in_layer.cpu()
         torch.save(output_dict, filename)
+        exit()
+
+    # test the hit rate of historical embeddings
+    def cxg_just_load(self):
+        rate = 0.9
+        staleness = 200
+        is_cached = torch.zeros(self.table.total_num_node, dtype=torch.int)
+        cached_embs = []
+        num_visit = torch.zeros(self.table.total_num_node, dtype=torch.int)
+
+        for epoch in range(3):
+            for batch in tqdm(
+                    self.loader.train_loader,
+                    bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"
+            ):
+                nodes = batch.sub_to_full[:batch.num_node_in_layer[1].item(
+                )].cpu()
+                num_visit[nodes] += 1
+                uncached_nodes = nodes[is_cached[nodes] == 0]
+                print(
+                    f"history hitrate {torch.sum(is_cached[nodes] > 0) / nodes.shape[0]} {torch.sum(is_cached > 0)}"
+                )
+                rand = torch.randn(nodes.shape[0], )
+                # rand = num_visit[nodes].float() * -1
+                percentile = torch.quantile(rand, rate)
+                nodes_to_check_in = nodes[torch.logical_and(
+                    rand < percentile, is_cached[nodes] == 0)]
+                cached_embs.append(nodes_to_check_in)
+                if len(cached_embs) > staleness:
+                    popped = cached_embs.pop(0)
+                    is_cached[popped] -= 1
+                is_cached[nodes_to_check_in] += 1
+                self.glb_iter += 1
         exit()
 
     def cxg_train_epoch(self):
@@ -212,7 +249,9 @@ class HistoryTrainer(cxgnncomp.Trainer):
                 loader,
                 bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
             self.optimizer.zero_grad()
-            self.table.lookup_and_load(batch, len(self.model.convs), load_all=1)
+            self.table.lookup_and_load(batch,
+                                       len(self.model.convs),
+                                       feature_cache_only=True)
             out = self.model(batch)
             loss = self.loss_fn(out, batch.y)
             losses.append(loss.detach())
@@ -241,6 +280,7 @@ class HistoryTrainer(cxgnncomp.Trainer):
                 if self.prof:
                     self.cxg_train_epoch_prof()
                 else:
+                    # self.cxg_just_load()
                     self.cxg_train_epoch()
             else:
                 assert False
@@ -251,5 +291,9 @@ class HistoryTrainer(cxgnncomp.Trainer):
         if len(self.val_metrics) > 0:
             self.val_metrics = np.array(self.val_metrics)
             self.test_metrics = np.array(self.test_metrics)
-            log.info(f"best-val-metrics: {self.val_metrics.max()} at epoch {self.val_metrics.argmax()}")
-            log.info(f"best-test-metrics: {self.test_metrics.max()} valided test-metric {self.test_metrics[self.val_metrics.argmax()]}")
+            log.info(
+                f"best-val-metrics: {self.val_metrics.max()} at epoch {self.val_metrics.argmax()}"
+            )
+            log.info(
+                f"best-test-metrics: {self.test_metrics.max()} valided test-metric {self.test_metrics[self.val_metrics.argmax()]}"
+            )

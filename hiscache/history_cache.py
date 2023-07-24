@@ -55,6 +55,7 @@ class HistoryCache:
                     self.allocate_distributed_store()
             self.allocate()
             self.fill(config)
+        self.num_stored_history = 0
 
     def allocate_distributed_store(self):
         t0 = time.time()
@@ -174,58 +175,67 @@ class HistoryCache:
     @torch.no_grad()  # important for removing grad from computation graph
     def update_history(self, batch, glb_iter):
         if not "history" in self.feat_mode or self.staleness_thres == 0:
+            # no historical embedding
             return
         num_node = batch.num_node_in_layer[1].item()
+        # reach staleness, refresh
         if (glb_iter % self.staleness_thres) == 0:
+            self.num_stored_history = max(self.num_stored_history, self.header)
             self.header = 0
+        # self.produced_embedding: [num_node, hidden_channels]
         if self.produced_embedding is None:
+            assert False, "produced embedding is None"
             self.produced_embedding = torch.randn(
                 [num_node, self.hidden_channels], device=self.device)
         # used_mask = self.used_masks[2][:num_node]
-        if self.produced_embedding.grad is not None:
+        if self.produced_embedding.grad is not None and self.method == "grad":
+            # Gradient policy
             grad = self.produced_embedding.grad
             assert grad.shape[
                 0] == num_node, "grad shape: {}, num_node: {}".format(
                     grad.shape, num_node)
             grad = grad.norm(dim=1)
         else:
+            # Random policy
             grad = torch.randn([num_node], device=self.device)
-        thres = torch.quantile(grad, self.rate)
-        record_mask = torch.logical_and(grad < thres, self.sub2embed == -1)
         self.produced_embedding.grad = None
-        # record
-        # print(self.produced_embedding.shape)
+
+        thres = torch.quantile(grad, self.rate)
+
+        # Record
+        # 1. grad less than thres; 2. not the cached embeddings
+        record_mask = torch.logical_and(grad < thres, self.sub2embed == -1)
         embed_to_record = self.produced_embedding[record_mask]
         num_to_record = embed_to_record.shape[0]
+        # attach to the end of the embedding buffer
         self.buffer.view(-1,
                          self.hidden_channels)[self.header:self.header +
                                                num_to_record] = embed_to_record
-
+        # invalidate the previous cached **features**
         begin = self.header * self.hidden_channels // self.in_channels
         end = math.ceil((self.header + num_to_record) * self.hidden_channels /
                         self.in_channels)
         self.full2embed[self.feat2full[begin:end]] = -1
 
         # invalidate the cache that are about to be overwritten
-        tmp = self.embed2full[self.header:self.header + num_to_record]
-        change_area = self.full2embed[tmp]
+        # NOTICE: embed2full[i] = j does not mean full2embed[j] = i
+        invalid_fulls = self.embed2full[self.header:self.header +
+                                        num_to_record]
+        change_area = self.full2embed[invalid_fulls]
+        # Only when full2embed is pointing to [header, header + num_to_record), we invalidate it
         change_area[torch.logical_and(
             change_area >= self.header,
             change_area < self.header + num_to_record)] = -1
-        self.full2embed[tmp] = change_area
-        # hkz comment:
-        #   below is not right: there are some nodes that are updated by other iteration of embeddings
-        #   so embed2full is not needed
-        # self.full2embed[self.embed2full[self.header: self.header +
-        #                 self.produced_embedding.shape[0]]] = -1
+        self.full2embed[invalid_fulls] = change_area
 
-        # update the mapping from full id to embed id
+        # Update the mapping from full id to embed id
         change_id = batch.sub_to_full[:num_node][record_mask]
-        # log.info(f"used_mask: {torch.sum(used_mask)} record_mask: {torch.sum(record_mask)} change_id: {change_id.shape[0]} num_node: {num_node}")
-        # assert(torch.sum(self.full2embed[change_id] != -1) == 0)
+        # the follow assert is correct
+        # assert (torch.sum(self.full2embed[change_id] != -1) == 0)
         new_id = torch.arange(self.header,
                               self.header + num_to_record,
                               device=self.device)
+        # Map between full ID and embedding ID
         self.full2embed[change_id] = new_id
         self.embed2full[self.header:self.header +
                         num_to_record] = batch.sub_to_full[:num_node][
@@ -239,24 +249,22 @@ class HistoryCache:
         #                 [evict_mask]] = -1  # TODO: may be wrong
 
     # infer both node features and history embeddings
-
-    def lookup_and_load(self, batch, num_layer, load_all=False):
-        if load_all:
+    def lookup_and_load(self, batch, num_layer, feature_cache_only=False):
+        if feature_cache_only:  # only use feature cache, do not use embedding cache
             self.sub2feat = self.full2embed[batch.sub_to_full +
                                             self.total_num_node]
             load_mask = self.sub2feat == -1
             if self.distributed_store:  # load from other GPUs
                 assert False
             else:  # load from UVM
-                batch.x = self.uvm.masked_get(batch.sub_to_full,
-                                              load_mask)  # load from UVM
+                batch.x = self.uvm.masked_get(batch.sub_to_full, load_mask)
             cached_feat = self.buffer.view(
                 -1, self.in_channels)[self.sub2feat]  # load from feat cache
             cached_feat[load_mask] = 0
             batch.x += cached_feat  # combine feat from UVM and feat cache
             return None
 
-        if not "history" in self.feat_mode:
+        if not "history" in self.feat_mode:  # no cache
             self.sub2embed = torch.ones([batch.num_node_in_layer[1].item()],
                                         dtype=torch.int64,
                                         device=self.device) * -1
@@ -272,12 +280,15 @@ class HistoryCache:
                     assert False
                 return None
 
-        nodes = batch.sub_to_full[:batch.num_node_in_layer[1].item()]
+        # nodes that are connected to seed nodes
+        layer1_nodes = batch.sub_to_full[:batch.num_node_in_layer[1].item()]
         input_nodes = batch.sub_to_full
-        self.sub2embed = self.full2embed[nodes]
-        # 1. move cached embedding
+        # whether nodes have cached embeddings
+        self.sub2embed = self.full2embed[layer1_nodes]
+        # 1. load cached embedding
         self.cached_embedding = self.buffer.view(
             -1, self.hidden_channels)[self.sub2embed]
+        # whether input nodes have cached features
         self.sub2feat = self.full2embed[input_nodes + self.total_num_node]
         # torch.cuda.synchronize()
         self.used_masks = hiscache.count_history_reconstruct(
@@ -289,11 +300,12 @@ class HistoryCache:
             num_layer,  # num_layer
         )
         # torch.cuda.synchronize()
+        # input nodes that are not pruned by embeddings
         used_mask = self.used_masks[0]
         hit_feat_mask = self.sub2feat != -1
-        # not pruned and not loaded
+        # not pruned and not cached
         load_mask = torch.logical_and(used_mask, (~hit_feat_mask))
-        self.ana = 0
+        self.ana = 1
         if self.ana:
             log.info(
                 f"glb-iter: {self.glb_iter} prune-by-his: {torch.sum(~self.used_masks[0])} prune-by-feat: {torch.sum(hit_feat_mask)} prune-by-both: {torch.sum(~load_mask)} overall: {batch.sub_to_full.shape[0]} hit-rate {torch.sum(~load_mask) / batch.sub_to_full.shape[0]}"
@@ -309,9 +321,6 @@ class HistoryCache:
             # 2. load raw features
             x = self.uvm.masked_get(batch.sub_to_full, load_mask)
             # 3. load hit raw feature cache
-            # x[hit_feat_mask] = self.buffer.view(-1, self.in_channels)[
-            #     self.sub2feat[hit_feat_mask]]
-
             cached_feat = self.buffer.view(-1, self.in_channels)[self.sub2feat]
             cached_feat[~hit_feat_mask] = 0
             x += cached_feat
