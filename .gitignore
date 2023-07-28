@@ -132,3 +132,6 @@ dmypy.json
 example/outputs/*
 outputs/*
 *.pdf
+test/outputs/*
+*DS_Store
+*.png
