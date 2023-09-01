@@ -45,8 +45,6 @@ Before
 loader = init_loader() # e.g., DGL loader
 for batch in loader:
     blocks = self.to_dgl_block(batch)
-    if self.skip:
-        continue
     batch_inputs = batch.x
     batch_labels = batch.y
     train(batch_inputs, batch_labels, blocks)
