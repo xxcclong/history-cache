@@ -59,7 +59,16 @@ def pagerank(config, loader):
     score[training_nodes] = weight / num_node
     deg = ptr[1:] - ptr[:-1]
     deg[deg == 0] = 1
-    num_iter = 14 if config.dl.dataset.name == "papers100M" else 25
+    # if config.dl.dataset.name == "papers100M":
+    #     num_iter = 14
+    # elif config.dl.dataset.name == "mag240M":
+    #     num_iter = 5
+    # elif config.dl.dataset.name == "twitter":
+    #     num_iter = 10
+    # elif config.dl.dataset.name == "friendster":
+    #     num_iter = 5
+    num_iter = config.dl.num_iter
+    print("num_iter", num_iter)
     # num_iter = 14
     d = 0.95
     for i in range(num_iter):
@@ -135,7 +144,7 @@ def get_cache_map(metric, cache_num):
 
 
 def test_cache(cache_status, loader):
-    num_epochs = 3
+    num_epochs = 1
     num_visit = 0
     num_hit = 0
     for epoch in range(num_epochs):
@@ -255,17 +264,21 @@ def main(config: DictConfig):
     else:
         cache_size = 5e9
     feat_len = config.dl.dataset.feature_dim
+    if dataset in ["twitter", "friendster"]:
+        feat_len = 768
+    print("feat_len", feat_len)
     # feat_len = 128 if dataset == "papers100M" else 768
     feature_cache_num = int(cache_size // (feat_len * 4))
     embedding_cache_num = int(cache_size // (256 * 4))
 
-    for func in [pagerank, degree_metric]:
-        print(str(func))
-        metric = func(config, loader)
-        cache_status = get_cache_map(metric, cache_num=feature_cache_num)
-        test_cache(cache_status, loader)
+    # for func in [pagerank]:
+    #     # for func in [pagerank, degree_metric]:
+    #     print(str(func))
+    #     metric = func(config, loader)
+    #     cache_status = get_cache_map(metric, cache_num=feature_cache_num)
+    #     test_cache(cache_status, loader)
 
-    # test_embedding_cache(cache_status, loader, config)
+    test_embedding_cache(None, loader, config)
 
 
 if __name__ == '__main__':
