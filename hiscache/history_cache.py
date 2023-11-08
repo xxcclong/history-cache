@@ -20,6 +20,7 @@ class HistoryCache:
                           "num_nodes.txt")).readline())
         self.num_device = 1
         self.device_id = device_id
+        self.start_history = config.history.start_history
         if config["dl"]["num_device"] > 1:
             self.num_device = int(config["dl"]["num_device"])
             assert device_id >= 0
@@ -33,6 +34,10 @@ class HistoryCache:
         self.staleness_thres = int(config.history.staleness_thres)
         self.limit = float(config.history.limit)
         log.warn("limiting cache size to {}GB".format(self.limit))
+
+        # self.first_in = torch.ones(self.total_num_node, dtype=torch.int32, device=self.device) * -1
+        # self.first_out = torch.ones(self.total_num_node, dtype=torch.int32, device=self.device) * -1
+
 
         self.full2embed = torch.ones([
             self.total_num_node * 2 + 1,
@@ -177,6 +182,9 @@ class HistoryCache:
         if not "history" in self.feat_mode or self.staleness_thres == 0:
             # no historical embedding
             return
+        if glb_iter < self.start_history:
+            # not starting historical embedding
+            return
         num_node = batch.num_node_in_layer[1].item()
         # reach staleness, refresh
         if (glb_iter % self.staleness_thres) == 0:
@@ -223,6 +231,9 @@ class HistoryCache:
                                         num_to_record]
         change_area = self.full2embed[invalid_fulls]
         # Only when full2embed is pointing to [header, header + num_to_record), we invalidate it
+        # invalidated_id = invalid_fulls[torch.logical_and(
+        #     change_area >= self.header,
+        #     change_area < self.header + num_to_record)]
         change_area[torch.logical_and(
             change_area >= self.header,
             change_area < self.header + num_to_record)] = -1
@@ -247,6 +258,18 @@ class HistoryCache:
         # # self.embed2full[self.sub2embed[evict_mask]] = -1
         # self.full2embed[batch.sub_to_full[:num_node]
         #                 [evict_mask]] = -1  # TODO: may be wrong
+
+        # evict_id = batch.sub_to_full[:num_node][evict_mask]
+        # if glb_iter >= 0:
+        #     self.first_in[change_id[self.first_in[change_id] == -1]] = glb_iter
+        #     self.first_out[evict_id[torch.logical_and(self.first_out[evict_id] == -1, self.first_in[evict_id] != -1)]] = glb_iter
+        #     self.first_out[invalidated_id[torch.logical_and(self.first_out[invalidated_id] == -1, self.first_in[invalidated_id] != -1)]] = glb_iter
+        # # if glb_iter > 200:
+        # #     print(invalidated_id.shape, invalidated_id)
+        # if glb_iter == 400:
+        #     self.first_in.cpu().numpy().tofile(f"{glb_iter}_in.dat")
+        #     self.first_out.cpu().numpy().tofile(f"{glb_iter}_out.dat")
+
 
     # infer both node features and history embeddings
     def lookup_and_load(self, batch, num_layer, feature_cache_only=False):
@@ -305,7 +328,7 @@ class HistoryCache:
         hit_feat_mask = self.sub2feat != -1
         # not pruned and not cached
         load_mask = torch.logical_and(used_mask, (~hit_feat_mask))
-        self.ana = 1
+        self.ana = False
         if self.ana:
             log.info(
                 f"glb-iter: {self.glb_iter} prune-by-his: {torch.sum(~self.used_masks[0])} prune-by-feat: {torch.sum(hit_feat_mask)} prune-by-both: {torch.sum(~load_mask)} overall: {batch.sub_to_full.shape[0]} hit-rate {torch.sum(~load_mask) / batch.sub_to_full.shape[0]}"

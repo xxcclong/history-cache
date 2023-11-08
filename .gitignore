@@ -135,3 +135,4 @@ outputs/*
 test/outputs/*
 *DS_Store
 *.png
+multirun/*

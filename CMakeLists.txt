@@ -23,7 +23,6 @@ endif()
 
 add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0) # necessary if using googletest and torch
 
-set(CMAKE_CXX_STANDARD 14)
 
 # find torch path
 execute_process(
