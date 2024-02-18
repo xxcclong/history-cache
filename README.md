@@ -7,6 +7,12 @@ A high-performance cache system and algorithm for GNN training, with the use of 
 
 ## How to use
 
+### 0. Environment
+
+Install `torch`, `numpy`, `torch_geometric`, `hydra-core`, `tqdm`.
+
+Install [CxGNN-DL](https://github.com/xxcclong/CxGNN-DL) and [CxGNN-Compute](https://github.com/xxcclong/CxGNN-Compute)
+
 ### 1. Install
 
 ```bash
