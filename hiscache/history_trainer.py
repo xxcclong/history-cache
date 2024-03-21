@@ -46,49 +46,6 @@ class HistoryTrainer(cxgnncomp.Trainer):
 
         # self.stream = torch.cuda.Stream(device=self.device)  # Create a new stream.
 
-    def prepare_history_x(self, batch):
-        if self.model.training:
-            # self.table.history_out = []
-            self.table.lookup_and_load(batch, len(self.model.convs))
-            self.used_masks = hiscache.count_history_reconstruct(
-                batch.ptr,
-                batch.idx,
-                self.table.sub_to_history_layered,
-                batch.sub_to_full.shape[0],
-                batch.y.shape[0],
-                len(self.model.convs),
-            )
-            # self.used_masks[0] = torch.zeros_like(self.used_masks[0])
-            # self.used_masks[0] = (torch.randn(
-            #     self.used_masks[0].shape, device=self.used_masks[0].device)>0)
-
-            num_uses = []
-            for it, mask in enumerate(self.used_masks):
-                num_uses.append(mask.sum().item())
-            num_uses.reverse()
-            arr = []
-            for it, item in enumerate(num_uses):
-                arr.append(item / batch.num_node_in_layer[it])
-            log.info(f"num_uses: {arr}")
-            log.info(batch.num_node_in_layer)
-            degree = batch.ptr[1:] - batch.ptr[:-1]
-            dst = torch.arange(batch.ptr.shape[0] -
-                               1).cuda().repeat_interleave(degree)
-            remain = self.used_masks[1][dst].sum().item()
-            log.info(f"remain: {remain / batch.idx.shape[0]}")
-            # log.info(f"used masks: {self.used_masks[0].sum()} {self.used_masks[0].shape}")
-            self.table.show()
-            if self.uvm.has_cache:
-                batch.x = self.uvm.cached_masked_get(batch.sub_to_full,
-                                                     self.used_masks[0])
-            else:
-                batch.x = self.uvm.masked_get(batch.sub_to_full,
-                                              self.used_masks[0])
-            # log.info(f"{torch.sum(self.used_masks[0])} {self.used_masks[0].shape}")
-            # log.info(time.time())
-        else:
-            batch.x = self.uvm.get(batch.sub_to_full)
-
     def cxg_dgl_train_epoch(self):
         self.model.train()
         for batch in tqdm(
@@ -96,7 +53,7 @@ class HistoryTrainer(cxgnncomp.Trainer):
                 bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
             self.optimizer.zero_grad()
             blocks = self.to_dgl_block(batch)
-            self.prepare_history_x(batch)
+            self.table.lookup_and_load(batch, len(self.model.convs))
             batch_inputs = batch.x
             batch_labels = batch.y
             batch_pred = self.model([blocks, batch_inputs])
@@ -222,7 +179,6 @@ class HistoryTrainer(cxgnncomp.Trainer):
         for batch in tqdm(
                 self.loader.train_loader,
                 bar_format="{desc:<5.5}{percentage:3.0f}%|{bar:10}{r_bar}"):
-            # continue
             # self.batch_to_file(batch, f"papers100M-{batch.num_node_in_layer[0]}.pt")
             self.optimizer.zero_grad()
             self.table.lookup_and_load(batch, len(self.model.convs))
