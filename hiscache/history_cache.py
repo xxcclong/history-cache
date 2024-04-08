@@ -253,11 +253,11 @@ class HistoryCache:
                             record_mask]
         self.header += num_to_record
         self.produced_embedding = None
-        # # evict
+        # # eviction by gradient may introduce bubbles to the cache buffer, can solve by periodical GC
+        # # evict by gradient
         # evict_mask = torch.logical_and(grad > thres, self.sub2embed != -1)
-        # # self.embed2full[self.sub2embed[evict_mask]] = -1
         # self.full2embed[batch.sub_to_full[:num_node]
-        #                 [evict_mask]] = -1  # TODO: may be wrong
+        #                 [evict_mask]] = -1
 
         # evict_id = batch.sub_to_full[:num_node][evict_mask]
         # if glb_iter >= 0:
